@@ -1,6 +1,6 @@
 # ESP32 Grow Sensor / Monitoring Node (Deutsch)
 
-**Aktuelle Version: v0.2.0 (ungetestet / Community-Preview)**
+**Aktuelle Version: v0.2.1 (ungetestet / Community-Preview)**
 
 Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet Sensordaten, PPFD/VPD-Auswertung, Wi-Fi-Setup und ein Partner/Supporter-Modul. Keine Aktorsteuerung vorhanden.
 
@@ -15,10 +15,12 @@ Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet S
 - Authentifizierung mit Pflicht-Passwortwechsel beim ersten Login.
 - Partner-/Supporter-Modul (lokal gespeichert, in der UI sichtbar).
 
-## UI/UX-Update (v0.2 Dashboard)
+## UI/UX-Update (v0.2.1 Dashboard)
 - Zwei In-App-Ansichten: **Dashboard** (Standard) und **Sensoren** (Sensorverwaltung) mit clientseitigem Umschalten.
+- Metrik-Kacheln sind voll klickbar; ein Detail-Modal öffnet Live- und 6h-Charts für Lux, PPFD, CO₂, Temp, Luftfeuchte, Leaf und VPD, inkl. Klick-Logging zum Debuggen von Overlays.
 - Sensorkacheln zeigen statusabhängige LEDs je Metrik (grün = gültige Daten, gelb = alt/ungültig, grau = deaktiviert/nicht vorhanden) basierend auf Telemetrie-Flags.
 - VPD-Kachel mit vollflächigem Farbverlauf („Chart-Look“), Zielband-Markierung und Marker (Skala 0,0–2,0 kPa; Marker ausgeblendet bei fehlenden Daten).
+- Dedizierte **Sensoren**-Seite mit Kacheln (aktive & verfügbare Sensoren) und einem “+ Sensor hinzufügen”-Wizard (Kategorie/Typ-Auswahl, Default-Pins gesperrt bis Advanced-Override, Neustart-Hinweis).
 - Wi-Fi-Karte klappt bei bestehender Verbindung auf einen pulsierenden Status mit IP-Info; Setup-/Static-IP-Felder erscheinen erst nach Toggle.
 - Telemetrie liefert nun Präsenz-/Aktiv-/OK-/Age-Felder pro Sensor sowie Wi-Fi-Infos (`ip`, `gw`, `sn`, `ap_mode`) für den UI-Zustand.
 
@@ -45,7 +47,7 @@ Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet S
    ```
 
 ## Stabilitätshinweis
-- v0.2.0 ist ungetestet und als Community-Preview gedacht. Nutzung auf eigenes Risiko.
+- v0.2.1 ist ungetestet und als Community-Preview gedacht. Nutzung auf eigenes Risiko.
 
 ## Lizenz
 - Nicht-kommerzielle Open-Source-Lizenz (siehe `LICENSE`). Nutzung, Ansicht, Modifikation und Pull Requests sind erlaubt.
