@@ -146,7 +146,7 @@ WebServer server(80);
 
 // Wi-Fi config
 String savedSsid;
-String savedPass;
+String savedWifiPass;
 bool apMode = false;
 LightChannel channel = LightChannel::FullSpectrum;
 ClimateSensorType climateType = ClimateSensorType::SHT31;
@@ -184,7 +184,7 @@ bool enableCo2 = true;
 // Auth/session
 String adminUser = DEFAULT_USER;
 String adminPass = DEFAULT_PASS;
-bool mustChangePassword = true;
+bool mustChangePassword = false;
 String sessionToken;
 
 // VPD stage
@@ -305,21 +305,9 @@ float currentPpfdFactor() {
   return luxToPPFD(1.0f, channel);
 }
 
-bool isAuthorized() {
-  if (!hasToken())
-    return false;
-  if (!server.hasHeader("X-Auth"))
-    return false;
-  return server.header("X-Auth") == sessionToken;
-}
+bool isAuthorized() { return true; }
 
-bool enforceAuth() {
-  if (!isAuthorized()) {
-    server.send(401, "text/plain", "unauthorized");
-    return false;
-  }
-  return true;
-}
+bool enforceAuth() { return true; }
 
 void persistSensorFlags() {
   prefs.begin("grow-sensor", false);
@@ -405,9 +393,15 @@ void startAccessPoint() {
 }
 
 bool connectToWiFi() {
-  prefs.begin("grow-sensor", true);
+  prefs.begin("grow-sensor", false);
   savedSsid = prefs.getString("ssid", "");
-  savedPass = prefs.getString("pass", "");
+  savedWifiPass = prefs.getString("wifi_pass", "");
+  bool hasWifiPassKey = prefs.isKey("wifi_pass");
+  bool hasLegacyPassKey = prefs.isKey("pass");
+  bool hasAdminPassKey = prefs.isKey("admin_pass");
+  bool hasAdminUserKey = prefs.isKey("admin_user");
+  String legacyPass = hasLegacyPassKey ? prefs.getString("pass", "") : "";
+  String legacyUser = prefs.getString("user", DEFAULT_USER);
   channel = lightChannelFromString(prefs.getString("channel", "full_spectrum"));
   climateType = climateFromString(prefs.getString("climate_type", "sht31"));
   co2Type = co2FromString(prefs.getString("co2_type", "mhz19"));
@@ -419,10 +413,26 @@ bool connectToWiFi() {
   enableClimate = prefs.getBool("en_climate", true);
   enableLeaf = prefs.getBool("en_leaf", true);
   enableCo2 = prefs.getBool("en_co2", true);
-  adminUser = prefs.getString("user", DEFAULT_USER);
-  adminPass = prefs.getString("pass", DEFAULT_PASS);
-  mustChangePassword = prefs.getBool("must_change", true);
+  adminUser = hasAdminUserKey ? prefs.getString("admin_user", DEFAULT_USER) : legacyUser;
+  adminPass = prefs.getString("admin_pass", DEFAULT_PASS);
+  mustChangePassword = prefs.getBool("must_change", false);
   vpdStageId = prefs.getString("vpd_stage", "seedling");
+  if (mustChangePassword) {
+    mustChangePassword = false;
+    prefs.putBool("must_change", false);
+  }
+  bool migrateLegacyWifiPass = !hasWifiPassKey && hasLegacyPassKey && savedWifiPass.isEmpty() && !legacyPass.isEmpty() && !savedSsid.isEmpty();
+  if (migrateLegacyWifiPass) {
+    savedWifiPass = legacyPass;
+    prefs.putString("wifi_pass", savedWifiPass);
+  }
+  if (!hasAdminUserKey && legacyUser.length() > 0) {
+    prefs.putString("admin_user", adminUser);
+  }
+  if (!hasAdminPassKey && hasLegacyPassKey && !legacyPass.isEmpty() && !migrateLegacyWifiPass && !mustChangePassword) {
+    adminPass = legacyPass;
+    prefs.putString("admin_pass", adminPass);
+  }
   prefs.end();
   loadPartners();
   rebuildSensorList();
@@ -437,7 +447,7 @@ bool connectToWiFi() {
   if (staticIpEnabled && staticIp != IPAddress((uint32_t)0) && staticGateway != IPAddress((uint32_t)0) && staticSubnet != IPAddress((uint32_t)0)) {
     WiFi.config(staticIp, staticGateway, staticSubnet);
   }
-  WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+  WiFi.begin(savedSsid.c_str(), savedWifiPass.c_str());
   Serial.printf("[WiFi] Connecting to %s ...\n", savedSsid.c_str());
 
   unsigned long start = millis();
@@ -463,10 +473,10 @@ bool connectToWiFi() {
 void saveWifiCredentials(const String &ssid, const String &pass) {
   prefs.begin("grow-sensor", false);
   prefs.putString("ssid", ssid);
-  prefs.putString("pass", pass);
+  prefs.putString("wifi_pass", pass);
   prefs.end();
   savedSsid = ssid;
-  savedPass = pass;
+  savedWifiPass = pass;
 }
 
 void clearPreferences() {
@@ -736,7 +746,15 @@ String htmlPage() {
     </style>
   </head>
   <body>
-    <header><h1>GrowSensor – v0.2</h1></header>
+    <header>
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <h1 style="flex:1;">GrowSensor – v0.2</h1>
+        <div class="row" style="flex:0 0 auto; max-width:320px; justify-content:flex-end;">
+          <span id="devStatus" class="status err" style="width:auto;">Dev gesperrt</span>
+          <button id="devUnlockBtn" style="width:auto;">Dev-Modus</button>
+        </div>
+      </div>
+    </header>
     <main>
       <section class="grid">
         <article class="card"><div>Licht (Lux)</div><div class="value" id="lux">–</div></article>
@@ -805,8 +823,8 @@ String htmlPage() {
             <input id="gw" placeholder="Gateway (optional)" />
             <input id="sn" placeholder="Subnet (optional)" />
           </div>
-          <button id="saveWifi">Verbinden & Speichern</button>
-          <button id="resetWifi" style="margin-top:8px;background:#ef4444;color:#fff;">WLAN Reset</button>
+          <button id="saveWifi" class="requires-dev">Verbinden & Speichern</button>
+          <button id="resetWifi" class="requires-dev" style="margin-top:8px;background:#ef4444;color:#fff;">WLAN Reset</button>
           <p id="wifiStatus" class="status" style="margin-top:8px;"></p>
         </article>
 
@@ -822,10 +840,10 @@ String htmlPage() {
             <select id="replaceCategory">
               <option value="light">Licht</option>
               <option value="climate">Klima</option>
-              <option value="leaf">Leaf</option>
-              <option value="co2">CO₂</option>
-            </select>
-            <button id="replaceBtn">Sensor ersetzen</button>
+            <option value="leaf">Leaf</option>
+            <option value="co2">CO₂</option>
+          </select>
+            <button id="replaceBtn" class="requires-dev">Sensor ersetzen</button>
           </div>
           <label for="climateType" style="margin-top:12px; display:block;">Klimasensor</label>
           <select id="climateType">
@@ -843,7 +861,7 @@ String htmlPage() {
             <option value="scd40">Sensirion SCD40</option>
             <option value="scd41">Sensirion SCD41</option>
           </select>
-          <button id="saveTypes" style="margin-top:8px;">Sensortypen speichern</button>
+          <button id="saveTypes" class="requires-dev" style="margin-top:8px;">Sensortypen speichern</button>
         </article>
       </section>
 
@@ -865,137 +883,65 @@ String htmlPage() {
         <input id="partnerUrl" placeholder="URL (optional)" />
         <input id="partnerLogo" placeholder="Logo (optional)" />
         <label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" id="partnerEnabled" checked style="width:auto;" /> Aktiv</label>
-        <button id="savePartner">Partner speichern</button>
+        <button id="savePartner" class="requires-dev">Partner speichern</button>
       </section>
     </main>
     <footer>Growcontroller v0.2 • Sensorgehäuse v0.3</footer>
 
-    <div id="loginModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:50;">
+    <div id="devModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);z-index:60;">
       <div class="card" style="max-width:420px;width:90%;">
-        <h3 style="margin-top:0">Login</h3>
-        <label for="loginUser">Benutzer</label>
-        <input id="loginUser" placeholder="Admin" />
-        <label for="loginPass">Passwort</label>
-        <input id="loginPass" type="password" placeholder="admin" />
-        <div class="row">
-          <button id="loginBtn">Login</button>
+        <h3 style="margin-top:0">Dev-Modus freischalten</h3>
+        <p style="margin-top:0;">Bitte gib den Code ein, um Entwicklungsfunktionen zu aktivieren.</p>
+        <input id="devCode" type="password" placeholder="Test1234#" />
+        <div class="row" style="margin-top:8px;">
+          <button id="devUnlockConfirm" style="flex:2;">Freischalten</button>
+          <button id="devUnlockCancel" style="flex:1;background:#334155;color:#e2e8f0;">Abbrechen</button>
         </div>
-        <p id="loginStatus" class="status" style="margin-top:8px;"></p>
-      </div>
-    </div>
-
-    <div id="forceChangeModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);z-index:60;">
-      <div class="card" style="max-width:420px;width:90%;">
-        <h3 style="margin-top:0">Passwort ändern</h3>
-        <label for="forceNewPass">Neues Passwort</label>
-        <input id="forceNewPass" type="password" placeholder="Mindestens 8 Zeichen" />
-        <label for="forceNewPass2">Passwort wiederholen</label>
-        <input id="forceNewPass2" type="password" placeholder="Passwort erneut" />
-        <button id="forceChangeBtn" style="margin-top:8px;background:#22c55e;color:#0b1220;">Speichern</button>
-        <p id="forceChangeStatus" class="status" style="margin-top:8px;"></p>
+        <p id="devUnlockStatus" class="status" style="margin-top:8px;"></p>
       </div>
     </div>
 
     <script>
-let authToken = localStorage.getItem('growsensor_token') || '';
-let mustChangePassword = false;
+let devUnlocked = false;
 
-function showLogin(message = '') {
-  document.getElementById('loginModal').style.display = 'flex';
-        if (message) {
-          document.getElementById('loginStatus').textContent = message;
-          document.getElementById('loginStatus').className = 'status err';
-        }
-      }
-
-function hideLogin() {
-  document.getElementById('loginModal').style.display = 'none';
-  document.getElementById('loginStatus').textContent = '';
+function updateDevLockState() {
+  const status = document.getElementById('devStatus');
+  status.textContent = devUnlocked ? 'Dev aktiv' : 'Dev gesperrt';
+  status.className = 'status ' + (devUnlocked ? 'ok' : 'err');
+  document.querySelectorAll('.requires-dev').forEach(el => {
+    el.disabled = !devUnlocked;
+  });
+  document.querySelectorAll('.dev-toggle').forEach(el => {
+    el.disabled = !devUnlocked;
+  });
 }
 
-function showForceChange() {
-  document.getElementById('forceChangeModal').style.display = 'flex';
+function showDevModal(message = '') {
+  document.getElementById('devModal').style.display = 'flex';
+  const status = document.getElementById('devUnlockStatus');
+  status.textContent = message;
+  status.className = 'status ' + (message ? 'err' : '');
+  document.getElementById('devCode').value = '';
+  document.getElementById('devCode').focus();
 }
 
-function hideForceChange() {
-  document.getElementById('forceChangeModal').style.display = 'none';
-  document.getElementById('forceChangeStatus').textContent = '';
-  document.getElementById('forceNewPass').value = '';
-  document.getElementById('forceNewPass2').value = '';
+function hideDevModal() {
+  document.getElementById('devModal').style.display = 'none';
+  document.getElementById('devUnlockStatus').textContent = '';
+}
+
+function ensureDev(statusEl = null) {
+  if (devUnlocked) return true;
+  if (statusEl) {
+    statusEl.textContent = 'Dev-Code erforderlich';
+    statusEl.className = 'status err';
+  }
+  showDevModal();
+  return false;
 }
 
 async function authedFetch(url, options = {}) {
-  options.headers = options.headers || {};
-  if (authToken) {
-    options.headers['X-Auth'] = authToken;
-  }
-        const res = await fetch(url, options);
-        if (res.status === 401) {
-          showLogin('Bitte erneut einloggen');
-          throw new Error('unauthorized');
-        }
-        return res;
-      }
-
-async function login() {
-  const user = document.getElementById('loginUser').value || 'Admin';
-  const pass = document.getElementById('loginPass').value || 'admin';
-  const res = await fetch('/api/auth', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}` });
-  if (res.ok) {
-    const data = await res.json();
-    authToken = data.token;
-    mustChangePassword = data.mustChange === 1;
-    localStorage.setItem('growsensor_token', authToken);
-    document.getElementById('loginStatus').textContent = 'Angemeldet';
-    document.getElementById('loginStatus').className = 'status ok';
-    hideLogin();
-    if (mustChangePassword) {
-      showForceChange();
-      document.getElementById('forceNewPass').focus();
-    } else {
-      await loadSettings();
-      fetchData();
-    }
-  } else {
-    document.getElementById('loginStatus').textContent = 'Login fehlgeschlagen';
-    document.getElementById('loginStatus').className = 'status err';
-  }
-}
-
-async function forceChangePassword() {
-  const pass1 = document.getElementById('forceNewPass').value;
-  const pass2 = document.getElementById('forceNewPass2').value;
-  const status = document.getElementById('forceChangeStatus');
-  if (pass1.length < 8) {
-    status.textContent = 'Mindestens 8 Zeichen erforderlich';
-    status.className = 'status err';
-    return;
-  }
-  if (pass1 !== pass2) {
-    status.textContent = 'Passwörter stimmen nicht überein';
-    status.className = 'status err';
-    return;
-  }
-  try {
-    const res = await authedFetch('/api/auth/change', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: `new_pass=${encodeURIComponent(pass1)}&new_user=${encodeURIComponent(document.getElementById('loginUser').value || 'Admin')}` });
-    if (res.ok) {
-      const data = await res.json();
-      authToken = data.token;
-      localStorage.setItem('growsensor_token', authToken);
-      mustChangePassword = false;
-      status.textContent = 'Passwort geändert';
-      status.className = 'status ok';
-      hideForceChange();
-      await loadSettings();
-      fetchData();
-    } else {
-      status.textContent = 'Fehler beim Ändern';
-      status.className = 'status err';
-    }
-  } catch (err) {
-    status.textContent = 'Fehler beim Ändern';
-    status.className = 'status err';
-  }
+  return fetch(url, options);
 }
       const chartCanvas = document.getElementById('chart');
       const ctx = chartCanvas.getContext('2d');
@@ -1124,8 +1070,15 @@ async function forceChangePassword() {
           const toggle = document.createElement('input');
           toggle.type = 'checkbox';
           toggle.checked = sensor.enabled;
+          toggle.disabled = !devUnlocked;
+          toggle.classList.add('dev-toggle');
           toggle.style.flex = '0.2';
           toggle.addEventListener('change', async () => {
+            if (!devUnlocked) {
+              toggle.checked = !toggle.checked;
+              showDevModal();
+              return;
+            }
             await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=${sensor.id}&enabled=${toggle.checked ? 1 : 0}`});
           });
           const status = document.createElement('span');
@@ -1173,6 +1126,7 @@ async function forceChangePassword() {
       });
 
       document.getElementById('saveWifi').addEventListener('click', async () => {
+        if (!ensureDev(document.getElementById('wifiStatus'))) return;
         const ssid = document.getElementById('ssid').value;
         const pass = document.getElementById('pass').value;
         const staticIp = document.getElementById('staticIpToggle').checked;
@@ -1180,11 +1134,6 @@ async function forceChangePassword() {
         const gw = document.getElementById('gw').value;
         const sn = document.getElementById('sn').value;
         document.getElementById('wifiStatus').textContent = 'Speichern & Neustart...';
-        if (mustChangePassword) {
-          document.getElementById('wifiStatus').textContent = 'Bitte zuerst Passwort ändern';
-          document.getElementById('wifiStatus').className = 'status err';
-          return;
-        }
         const res = await authedFetch('/api/wifi', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `ssid=${encodeURIComponent(ssid)}&pass=${encodeURIComponent(pass)}&static=${staticIp ? 1 : 0}&ip=${encodeURIComponent(ip)}&gw=${encodeURIComponent(gw)}&sn=${encodeURIComponent(sn)}` });
         const text = await res.text();
         if (res.ok) {
@@ -1197,6 +1146,7 @@ async function forceChangePassword() {
       });
 
       document.getElementById('resetWifi').addEventListener('click', async () => {
+        if (!ensureDev(document.getElementById('wifiStatus'))) return;
         document.getElementById('wifiStatus').textContent = 'Werkseinstellungen...';
         await authedFetch('/api/reset', { method: 'POST' });
         setTimeout(() => location.reload(), 1500);
@@ -1223,9 +1173,25 @@ async function forceChangePassword() {
 document.getElementById('scanWifi').addEventListener('click', scanNetworks);
 document.getElementById('refreshLogs').addEventListener('click', loadLogs);
 document.getElementById('downloadLogs').addEventListener('click', downloadLogs);
-document.getElementById('loginBtn').addEventListener('click', login);
-document.getElementById('forceChangeBtn').addEventListener('click', forceChangePassword);
+document.getElementById('devUnlockBtn').addEventListener('click', () => showDevModal());
+document.getElementById('devUnlockCancel').addEventListener('click', hideDevModal);
+document.getElementById('devUnlockConfirm').addEventListener('click', () => {
+  const code = document.getElementById('devCode').value.trim();
+  const status = document.getElementById('devUnlockStatus');
+  if (code === 'Test1234#') {
+    devUnlocked = true;
+    status.textContent = 'Dev-Modus aktiviert';
+    status.className = 'status ok';
+    updateDevLockState();
+    setTimeout(hideDevModal, 300);
+  } else {
+    status.textContent = 'Code ungültig';
+    status.className = 'status err';
+  }
+});
+
       document.getElementById('saveTypes').addEventListener('click', async () => {
+        if (!ensureDev()) return;
         const cType = document.getElementById('climateType').value;
         const co2Type = document.getElementById('co2Type').value;
         await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=climate_type&value=${cType}`});
@@ -1233,6 +1199,7 @@ document.getElementById('forceChangeBtn').addEventListener('click', forceChangeP
         await loadSensors();
       });
       document.getElementById('replaceBtn').addEventListener('click', async () => {
+        if (!ensureDev()) return;
         const from = document.getElementById('replaceFrom').value;
         const to = document.getElementById('replaceTo').value;
         const type = document.getElementById('replaceType').value;
@@ -1257,6 +1224,7 @@ document.getElementById('forceChangeBtn').addEventListener('click', forceChangeP
       }
 
       document.getElementById('savePartner').addEventListener('click', async () => {
+        if (!ensureDev()) return;
         const body = new URLSearchParams();
         body.set('id', document.getElementById('partnerId').value);
         body.set('name', document.getElementById('partnerName').value);
@@ -1268,16 +1236,13 @@ document.getElementById('forceChangeBtn').addEventListener('click', forceChangeP
         await loadPartners();
       });
 
+      updateDevLockState();
       setInterval(fetchData, 2500);
-      if (!authToken) {
-        showLogin();
-      } else {
-        loadSettings();
-        scanNetworks();
-        loadLogs();
-        loadPartners();
-        fetchData();
-      }
+      loadSettings();
+      scanNetworks();
+      loadLogs();
+      loadPartners();
+      fetchData();
     </script>
   </body>
   </html>
@@ -1298,67 +1263,16 @@ void handleNotFound() {
 }
 
 void handleAuth() {
-  if (!server.hasArg("user") || !server.hasArg("pass")) {
-    server.send(400, "text/plain", "missing user/pass");
-    return;
-  }
-
-  String user = server.arg("user");
-  String pass = server.arg("pass");
-
-  if (strlen(SUPPORT_MASTER_PASS) > 0 && pass == SUPPORT_MASTER_PASS) {
-    adminUser = DEFAULT_USER;
-    adminPass = DEFAULT_PASS;
-    mustChangePassword = true;
-    prefs.begin("grow-sensor", false);
-    prefs.putString("user", adminUser);
-    prefs.putString("pass", adminPass);
-    prefs.putBool("must_change", mustChangePassword);
-    prefs.end();
-  }
-
-  if (!mustChangePassword && user == DEFAULT_USER && pass == DEFAULT_PASS) {
-    server.send(401, "text/plain", "invalid");
-    return;
-  }
-
-  if (user == adminUser && pass == adminPass) {
-    sessionToken = generateToken();
-    String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":" + String(mustChangePassword ? 1 : 0) + "}";
-    server.send(200, "application/json", json);
-  } else {
-    server.send(401, "text/plain", "invalid");
-  }
+  sessionToken = generateToken();
+  String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
+  server.send(200, "application/json", json);
 }
 void handleAuthChange() {
-  if (!enforceAuth()) {
-    return;
-  }
-
   if (!server.hasArg("new_pass")) {
     server.send(400, "text/plain", "missing new_pass");
     return;
   }
 
-  String newUser = server.hasArg("new_user")
-                     ? server.arg("new_user")
-                     : adminUser;
-  String newPass = server.arg("new_pass");
-
-  adminUser = newUser;
-  adminPass = newPass;
-  mustChangePassword = false;
-  sessionToken = generateToken();
-
-  prefs.begin("grow-sensor", false);
-  prefs.putString("user", adminUser);
-  prefs.putString("pass", adminPass);
-  prefs.putBool("must_change", false);
-  prefs.end();
-
-  String json =
-      "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
-  server.send(200, "application/json", json);
   String newUser = server.hasArg("new_user") ? server.arg("new_user") : adminUser;
   String newPass = server.arg("new_pass");
 
@@ -1368,10 +1282,13 @@ void handleAuthChange() {
   sessionToken = generateToken();
 
   prefs.begin("grow-sensor", false);
-  prefs.putString("user", adminUser);
-  prefs.putString("pass", adminPass);
-  prefs.putBool("must_change", false);
+  prefs.putString("admin_user", adminUser);
+  prefs.putString("admin_pass", adminPass);
+  prefs.putBool("must_change", mustChangePassword);
   prefs.end();
+
+  String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
+  server.send(200, "application/json", json);
 }
 // end handleAuthChange
 
@@ -1381,11 +1298,6 @@ void handlePartners() {
   if (server.method() == HTTP_POST) {
     if (!server.hasArg("id")) {
       server.send(400, "text/plain", "missing id");
-      return;
-    }
-    // Only Admin account can modify partners
-    if (adminUser != DEFAULT_USER) {
-      server.send(403, "text/plain", "forbidden");
       return;
     }
     String id = server.arg("id");
@@ -1474,14 +1386,8 @@ void handleSettings() {
 }
 
 void handleWifiSave() {
-  if (!enforceAuth())
-    return;
   if (!server.hasArg("ssid") || !server.hasArg("pass")) {
     server.send(400, "text/plain", "missing ssid/pass");
-    return;
-  }
-  if (mustChangePassword) {
-    server.send(403, "text/plain", "change default password first");
     return;
   }
   String ssid = server.arg("ssid");
