@@ -1,4 +1,4 @@
-# Aufrüstung / Umrüstung von Sensoren (ESP32 Growcontroller v0.2, untested)
+# Aufrüstung / Umrüstung von Sensoren (ESP32 Growcontroller v0.2.1, untested)
 
 Dieses Dokument beschreibt, wie man Sensoren austauscht bzw. alternative, ESP32-kompatible Sensoren auswählt. Die Auswahl erfolgt in der Weboberfläche unter **Sensoren**.
 
@@ -21,9 +21,10 @@ Dieses Dokument beschreibt, wie man Sensoren austauscht bzw. alternative, ESP32-
 ## Auswahl in der Weboberfläche
 1. Einloggen (Standard: `Admin` / `admin`, danach Passwort ändern).
 2. Tab **Sensoren** öffnen.
-3. Gewünschten Klimasensor und CO₂-Sensor in den Dropdowns auswählen.
-4. **Sensortypen speichern** klicken.
-5. Bei Bedarf einzelne Sensoren über die Schalter aktivieren/deaktivieren.
+3. Aktive Sensoren erscheinen als Kacheln (Statuspunkt + „Aktivieren/Deaktivieren“-Button).
+4. Über „+ Sensor hinzufügen“ den Wizard starten: Kategorie wählen, Sensortyp wählen. Default-Pins sind gesperrt, erst nach „Advanced Pin Config“ editierbar (Warnhinweis beachten).
+5. Wizard speichern → Sensor wird angelegt; für geänderte Pins ggf. Neustart durchführen (Hinweis im Wizard beachten).
+6. Bei Bedarf einzelne Sensoren über die Kachel-Schalter aktivieren/deaktivieren.
 
 ## Verhalten
 - Nur für die aktiv ausgewählten Sensoren wird ein Leseversuch unternommen. Nicht ausgewählte Sensoren werden übersprungen.

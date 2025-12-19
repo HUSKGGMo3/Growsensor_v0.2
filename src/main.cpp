@@ -121,6 +121,48 @@ struct SensorSlot {
   bool *enabledFlag = nullptr;
 };
 
+struct SensorTemplate {
+  const char *type;
+  const char *name;
+  const char *category;
+  const char *interfaceType; // i2c, uart, gpio
+  int sda = -1;
+  int scl = -1;
+  int rx = -1;
+  int tx = -1;
+};
+
+struct SensorConfig {
+  String id;
+  String type;
+  String category;
+  String name;
+  String interfaceType;
+  bool enabled = true;
+  bool healthy = false;
+  bool present = false;
+  bool advancedPins = false;
+  int sda = -1;
+  int scl = -1;
+  int rx = -1;
+  int tx = -1;
+};
+
+const SensorTemplate SENSOR_TEMPLATES[] = {
+    {"BH1750", "BH1750", "light", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"TSL2591", "TSL2591", "light", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"SHT31", "SHT31", "climate", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"BME280", "BME280", "climate", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"DHT22", "DHT22", "climate", "gpio", -1, -1, -1, -1},
+    {"MLX90614", "MLX90614", "leaf", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"MHZ19", "MH-Z19", "co2", "uart", -1, -1, DEFAULT_CO2_RX_PIN, DEFAULT_CO2_TX_PIN},
+    {"SCD30", "SCD30", "co2", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+    {"SCD40", "SCD40", "co2", "i2c", DEFAULT_I2C_SDA_PIN, DEFAULT_I2C_SCL_PIN, -1, -1},
+};
+const size_t SENSOR_TEMPLATE_COUNT = sizeof(SENSOR_TEMPLATES) / sizeof(SENSOR_TEMPLATES[0]);
+
+std::vector<SensorConfig> sensorConfigs;
+
 struct Partner {
   String id;
   String name;
@@ -388,6 +430,102 @@ SensorSlot *findSensor(const String &id) {
   return nullptr;
 }
 
+const SensorTemplate *findTemplate(const String &type) {
+  for (size_t i = 0; i < SENSOR_TEMPLATE_COUNT; i++) {
+    if (type.equalsIgnoreCase(SENSOR_TEMPLATES[i].type)) return &SENSOR_TEMPLATES[i];
+  }
+  return nullptr;
+}
+
+void saveSensorConfigs() {
+  DynamicJsonDocument doc(2048);
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto &cfg : sensorConfigs) {
+    JsonObject o = arr.createNestedObject();
+    o["id"] = cfg.id;
+    o["type"] = cfg.type;
+    o["category"] = cfg.category;
+    o["name"] = cfg.name;
+    o["iface"] = cfg.interfaceType;
+    o["enabled"] = cfg.enabled;
+    o["advanced"] = cfg.advancedPins;
+    if (cfg.sda >= 0) o["sda"] = cfg.sda;
+    if (cfg.scl >= 0) o["scl"] = cfg.scl;
+    if (cfg.rx >= 0) o["rx"] = cfg.rx;
+    if (cfg.tx >= 0) o["tx"] = cfg.tx;
+  }
+  String out;
+  serializeJson(arr, out);
+  prefs.begin("grow-sensor", false);
+  prefs.putString("sensors_cfg", out);
+  prefs.end();
+}
+
+void applyPinsFromConfig() {
+  bool appliedI2C = false;
+  bool appliedUart = false;
+  for (const auto &cfg : sensorConfigs) {
+    if (cfg.advancedPins) {
+      if (cfg.interfaceType == "i2c" && cfg.sda >= 0 && cfg.scl >= 0) {
+        pinI2C_SDA = cfg.sda;
+        pinI2C_SCL = cfg.scl;
+        appliedI2C = true;
+      }
+      if (cfg.interfaceType == "uart" && cfg.rx >= 0 && cfg.tx >= 0) {
+        pinCO2_RX = cfg.rx;
+        pinCO2_TX = cfg.tx;
+        appliedUart = true;
+      }
+    }
+  }
+  if (!appliedI2C) {
+    pinI2C_SDA = DEFAULT_I2C_SDA_PIN;
+    pinI2C_SCL = DEFAULT_I2C_SCL_PIN;
+  }
+  if (!appliedUart) {
+    pinCO2_RX = DEFAULT_CO2_RX_PIN;
+    pinCO2_TX = DEFAULT_CO2_TX_PIN;
+  }
+}
+
+void loadSensorConfigs() {
+  sensorConfigs.clear();
+  prefs.begin("grow-sensor", true);
+  String raw = prefs.getString("sensors_cfg", "");
+  prefs.end();
+  if (raw.length() == 0) {
+    SensorConfig l; l.id="lux"; l.type="BH1750"; l.category="light"; l.name="BH1750"; l.interfaceType="i2c"; l.enabled=enableLight; l.sda=pinI2C_SDA; l.scl=pinI2C_SCL;
+    SensorConfig c; c.id="climate"; c.type=climateSensorName(climateType); c.category="climate"; c.name="Klima"; c.interfaceType="i2c"; c.enabled=enableClimate; c.sda=pinI2C_SDA; c.scl=pinI2C_SCL;
+    SensorConfig lf; lf.id="leaf"; lf.type="MLX90614"; lf.category="leaf"; lf.name="Leaf"; lf.interfaceType="i2c"; lf.enabled=enableLeaf; lf.sda=pinI2C_SDA; lf.scl=pinI2C_SCL;
+    SensorConfig co; co.id="co2"; co.type=co2SensorName(co2Type); co.category="co2"; co.name="CO₂"; co.interfaceType="uart"; co.enabled=enableCo2; co.rx=pinCO2_RX; co.tx=pinCO2_TX;
+    sensorConfigs.push_back(l); sensorConfigs.push_back(c); sensorConfigs.push_back(lf); sensorConfigs.push_back(co);
+    saveSensorConfigs();
+    return;
+  }
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    SensorConfig cfg;
+    cfg.id = obj["id"] | "";
+    cfg.type = obj["type"] | "";
+    cfg.category = obj["category"] | "";
+    cfg.name = obj["name"] | cfg.type;
+    cfg.interfaceType = obj["iface"] | "";
+    cfg.enabled = obj["enabled"] | true;
+    cfg.advancedPins = obj["advanced"] | false;
+    cfg.sda = obj["sda"] | -1;
+    cfg.scl = obj["scl"] | -1;
+    cfg.rx = obj["rx"] | -1;
+    cfg.tx = obj["tx"] | -1;
+    sensorConfigs.push_back(cfg);
+    if (cfg.id == "lux") enableLight = cfg.enabled;
+    if (cfg.id == "climate") enableClimate = cfg.enabled;
+    if (cfg.id == "leaf") enableLeaf = cfg.enabled;
+    if (cfg.id == "co2") enableCo2 = cfg.enabled;
+  }
+  applyPinsFromConfig();
+}
+
 // ----------------------------
 // Wi-Fi handling
 // ----------------------------
@@ -429,6 +567,7 @@ bool connectToWiFi() {
   }
   prefs.end();
   loadPartners();
+  loadSensorConfigs();
   rebuildSensorList();
 
   if (savedSsid.isEmpty()) {
@@ -746,9 +885,11 @@ String htmlPage() {
       footer { text-align: center; padding: 12px; font-size: 0.85rem; color: #94a3b8; }
       .card-header { display:flex; align-items:center; justify-content: space-between; gap:8px; }
       .status-dot { width:12px; height:12px; border-radius:50%; background:#6b7280; box-shadow:0 0 0 3px rgba(107,114,128,0.25); }
-      .metric { cursor: default; }
+      .metric-tile { cursor: pointer; position:relative; transition: transform 120ms ease, border-color 120ms ease; }
+      .metric-tile:hover { transform: translateY(-2px); border-color: #334155; }
+      .metric-tile * { pointer-events: none; }
       .hover-chart { position:absolute; inset:8px; padding:8px; background:rgba(15,23,42,0.96); border:1px solid #1f2937; border-radius:10px; display:none; align-items:center; justify-content:center; }
-      .metric:hover .hover-chart { display:flex; }
+      .metric-tile:hover .hover-chart { display:flex; }
       .hover-chart canvas { width:100%; height:140px; }
       .dev-note { color:#f59e0b; font-size:0.9rem; margin-top:6px; }
       #devModal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); z-index:60; }
@@ -770,13 +911,29 @@ String htmlPage() {
       .sensor-card { border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; background:#0b1220; }
       .sensor-card .row { align-items:flex-start; }
       .sensor-desc { color:#94a3b8; font-size:0.9rem; }
+      .sensor-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+      .sensor-tile { border:1px solid #1f2937; border-radius:12px; padding:12px; background:#0b1220; display:flex; flex-direction:column; gap:6px; cursor:pointer; transition: transform 120ms ease, border-color 120ms ease; }
+      .sensor-tile:hover { transform: translateY(-2px); border-color:#334155; }
+      .sensor-status { display:flex; align-items:center; gap:8px; font-size:0.95rem; color:#cbd5e1; }
+      .sensor-status .status-dot { width:10px; height:10px; }
+      .sensor-actions { display:flex; gap:8px; flex-wrap:wrap; }
+      .tag { display:inline-block; padding:3px 8px; border-radius:999px; font-size:0.8rem; background:#1f2937; color:#cbd5e1; }
+      #chartModal { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center; z-index:80; }
+      #chartModal .modal-card { background:#0b1220; border:1px solid #1f2937; border-radius:14px; padding:16px; width:90%; max-width:520px; box-shadow:0 10px 28px rgba(0,0,0,0.45); display:flex; flex-direction:column; gap:12px; }
+      .modal-tabs { display:flex; gap:8px; }
+      .modal-tabs button { flex:1; padding:10px; background:#1f2937; border:1px solid #1f2937; color:#e2e8f0; }
+      .modal-tabs button.active { background:linear-gradient(120deg,#22d3ee,#6366f1); color:#0b1220; border-color:transparent; }
+      .modal-close { position:absolute; top:10px; right:12px; background:transparent; color:#e2e8f0; border:none; font-size:1.2rem; cursor:pointer; }
+      .wizard-step { display:none; flex-direction:column; gap:10px; }
+      .wizard-step.active { display:flex; }
+      .pill { padding:4px 8px; border-radius:999px; background:#1f2937; color:#cbd5e1; font-size:0.85rem; display:inline-flex; gap:6px; align-items:center; }
     </style>
   </head>
   <body>
     <header>
       <div class="header-row">
         <div>
-          <h1>GrowSensor – v0.2</h1>
+          <h1>GrowSensor – v0.2.1</h1>
           <div class="hover-hint">Live Monitoring</div>
         </div>
         <div class="header-row" style="gap:10px;">
@@ -797,37 +954,37 @@ String htmlPage() {
     <main>
       <div id="view-dashboard" class="view active">
         <section class="grid metrics">
-        <article class="card metric" data-metric="lux">
+        <article class="card metric-tile" data-metric="lux">
           <div class="card-header"><div>Licht (Lux)</div><span class="status-dot" id="luxDot"></span></div>
           <div class="value" id="lux">–</div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="lux" width="320" height="140"></canvas></div>
         </article>
-        <article class="card metric" data-metric="lux">
+        <article class="card metric-tile" data-metric="ppfd">
           <div class="card-header"><div>PPFD (µmol/m²/s)</div><span class="status-dot" id="ppfdDot"></span></div>
           <div class="value" id="ppfd">–</div>
           <div style="font-size:0.85rem;margin-top:6px;">Spektrum: <span id="ppfdSpectrum">–</span><br/>Faktor: <span id="ppfdFactor">–</span></div>
         </article>
-        <article class="card metric" data-metric="co2">
+        <article class="card metric-tile" data-metric="co2">
           <div class="card-header"><div>CO₂ (ppm)</div><span class="status-dot" id="co2Dot"></span></div>
           <div class="value" id="co2">–</div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="co2" width="320" height="140"></canvas></div>
         </article>
-        <article class="card metric" data-metric="temp">
+        <article class="card metric-tile" data-metric="temp">
           <div class="card-header"><div>Umgebungstemperatur (°C)</div><span class="status-dot" id="tempDot"></span></div>
           <div class="value" id="temp">–</div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="temp" width="320" height="140"></canvas></div>
         </article>
-        <article class="card metric" data-metric="humidity">
+        <article class="card metric-tile" data-metric="humidity">
           <div class="card-header"><div>Luftfeuchte (%)</div><span class="status-dot" id="humidityDot"></span></div>
           <div class="value" id="humidity">–</div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="humidity" width="320" height="140"></canvas></div>
         </article>
-        <article class="card metric" data-metric="leaf">
+        <article class="card metric-tile" data-metric="leaf">
           <div class="card-header"><div>Leaf-Temp (°C)</div><span class="status-dot" id="leafDot"></span></div>
           <div class="value" id="leaf">–</div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="leaf" width="320" height="140"></canvas></div>
         </article>
-        <article class="card metric" data-metric="vpd">
+        <article class="card metric-tile" data-metric="vpd">
           <div class="card-header"><div>VPD (kPa)</div><span class="status-dot" id="vpdDot"></span></div>
           <div class="value" id="vpd">–</div>
           <div id="vpdStatus" style="font-size:0.85rem;margin-top:6px;"></div>
@@ -922,69 +1079,12 @@ String htmlPage() {
 
       <div id="view-sensors" class="view">
         <section class="card">
-          <h3 style="margin-top:0">Sensoren verwalten</h3>
-          <p class="sensor-desc">Checkbox = Sensor aktivieren/deaktivieren. Status zeigt aktiv / keine Daten / disabled.</p>
-          <div id="sensorList"></div>
-          <div class="row" style="margin-top:12px;">
-            <select id="replaceFrom"></select>
-            <input id="replaceTo" placeholder="Neuer Sensor ID" />
-          </div>
-          <div class="row">
-            <input id="replaceType" placeholder="Typ (z.B. sht31)" />
-            <select id="replaceCategory">
-              <option value="light">Licht</option>
-              <option value="climate">Klima</option>
-              <option value="leaf">Leaf</option>
-              <option value="co2">CO₂</option>
-            </select>
-            <button id="replaceBtn">Sensor ersetzen</button>
-          </div>
+          <h3 style="margin-top:0">Sensoren</h3>
+          <div class="sensor-grid" id="activeSensors"></div>
+          <h4 style="margin:12px 0 6px;">Verfügbare Sensoren</h4>
+          <div class="sensor-grid" id="availableSensors"></div>
           <div style="margin-top:12px;">
-            <h4 style="margin:8px 0 4px;">Sensor ersetzen – Erklärung</h4>
-            <p class="sensor-desc">Wähle bestehenden Sensor (From), gib neue ID/Typ/Kategorie (To) an, um ihn zu tauschen.</p>
-          </div>
-          <label for="climateType" style="margin-top:12px; display:block;">Klimasensor</label>
-          <select id="climateType">
-            <option value="sht31">SHT31/SHT30</option>
-            <option value="dht22">DHT22/AM2302</option>
-            <option value="bme280">BME280</option>
-            <option value="bme680">BME680</option>
-            <option value="ds18b20">DS18B20 (Temp-only)</option>
-          </select>
-          <label for="co2Type" style="margin-top:12px; display:block;">CO₂ Sensor</label>
-          <select id="co2Type">
-            <option value="mhz19">MH-Z19B/C</option>
-            <option value="senseair_s8">Senseair S8</option>
-            <option value="scd30">Sensirion SCD30</option>
-            <option value="scd40">Sensirion SCD40</option>
-            <option value="scd41">Sensirion SCD41</option>
-          </select>
-          <button id="saveTypes" style="margin-top:8px;">Sensortypen speichern</button>
-          <div style="margin-top:16px; padding-top:12px; border-top:1px solid #1f2937;">
-            <h4 style="margin:0 0 6px;">Pins (Advanced)</h4>
-            <p class="sensor-desc" style="margin-top:4px;">Keine Strapping-Pins verwenden. Bereich 0–39.</p>
-            <div class="row">
-              <div>
-                <label for="pinSda">I2C SDA</label>
-                <input id="pinSda" type="number" min="0" max="39" />
-              </div>
-              <div>
-                <label for="pinScl">I2C SCL</label>
-                <input id="pinScl" type="number" min="0" max="39" />
-              </div>
-            </div>
-            <div class="row">
-              <div>
-                <label for="pinCo2Rx">CO₂ RX</label>
-                <input id="pinCo2Rx" type="number" min="0" max="39" />
-              </div>
-              <div>
-                <label for="pinCo2Tx">CO₂ TX</label>
-                <input id="pinCo2Tx" type="number" min="0" max="39" />
-              </div>
-            </div>
-            <button id="savePins" style="margin-top:8px;">Pins speichern &amp; Neustart</button>
-            <p id="pinsStatus" class="status" style="margin-top:8px;"></p>
+            <button id="addSensorBtn" style="width:auto;">+ Sensor hinzufügen</button>
           </div>
         </section>
       </div>
@@ -1010,7 +1110,7 @@ String htmlPage() {
         <button id="savePartner">Partner speichern</button>
       </section>
     </main>
-    <footer>Growcontroller v0.2 • Sensorgehäuse v0.3</footer>
+    <footer>Growcontroller v0.2.1 • Sensorgehäuse v0.3</footer>
 
     <div id="devModal">
       <div class="card" style="max-width:420px;width:90%;">
@@ -1022,6 +1122,69 @@ String htmlPage() {
           <button id="cancelDev" class="ghost">Abbrechen</button>
         </div>
         <p id="devStatusMsg" class="status" style="margin-top:8px;"></p>
+      </div>
+    </div>
+
+    <div id="chartModal">
+      <div class="modal-card" id="chartModalCard">
+        <button class="modal-close" id="chartClose">&times;</button>
+        <div class="card-header" style="padding:0;">
+          <div id="chartModalTitle">Detailansicht</div>
+          <span class="badge" id="chartModalBadge">–</span>
+        </div>
+        <div class="modal-tabs">
+          <button id="tabLive" class="active">Live</button>
+          <button id="tabLast6h">Letzte 6h</button>
+        </div>
+        <div style="position:relative;">
+          <canvas id="detailChart" style="width:100%; height:260px;"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div id="sensorWizard" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:80; align-items:center; justify-content:center;">
+      <div class="modal-card" style="max-width:640px; width:92%; position:relative;">
+        <button class="modal-close" id="sensorWizardClose">&times;</button>
+        <h3 style="margin-top:0">Sensor hinzufügen</h3>
+        <div class="wizard-step active" data-step="1">
+          <label for="sensorCategorySelect">Kategorie</label>
+          <select id="sensorCategorySelect"></select>
+          <label for="sensorTypeSelect">Sensor</label>
+          <select id="sensorTypeSelect"></select>
+        </div>
+        <div class="wizard-step" data-step="2">
+          <div class="pill" id="defaultPinsInfo">Standardpins werden genutzt.</div>
+          <div class="row">
+            <div>
+              <label>SDA</label>
+              <input id="wizSda" type="number" min="0" max="39" disabled />
+            </div>
+            <div>
+              <label>SCL</label>
+              <input id="wizScl" type="number" min="0" max="39" disabled />
+            </div>
+            <div>
+              <label>RX</label>
+              <input id="wizRx" type="number" min="0" max="39" disabled />
+            </div>
+            <div>
+              <label>TX</label>
+              <input id="wizTx" type="number" min="0" max="39" disabled />
+            </div>
+          </div>
+          <button id="advancedPinsBtn" class="ghost" style="width:auto;">Advanced Pin Config</button>
+          <p class="sensor-desc" id="advancedPinsWarn" style="display:none;">Wirklich Pinbelegung ändern? Falsche Pins können den Sensor unbrauchbar machen.</p>
+        </div>
+        <div class="wizard-step" data-step="3">
+          <p style="margin:0;">Bitte ESP einmal aus- und einstecken (Neustart), damit Pins aktiv werden.</p>
+          <button id="restartNow" class="ghost" style="width:auto;">Neustart jetzt</button>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <button id="wizBack" class="ghost">Zurück</button>
+          <button id="wizNext">Weiter</button>
+          <button id="wizSave" style="display:none;">Speichern</button>
+        </div>
+        <p id="wizStatus" class="status" style="margin-top:8px;"></p>
       </div>
     </div>
 
@@ -1039,9 +1202,30 @@ String htmlPage() {
       const DEV_CODE = "Test1234#";
       const hoverCanvases = {};
       document.querySelectorAll('.hover-canvas').forEach(c => hoverCanvases[c.dataset.metric] = c.getContext('2d'));
+      const detailChartCanvas = document.getElementById('detailChart');
+      const detailCtx = detailChartCanvas.getContext('2d');
+      let detailMetric = null;
+      let detailMode = 'live';
+      let clickDebug = false;
 
       function authedFetch(url, options = {}) { return fetch(url, options); }
       function flag(val, fallback = false) { if (val === undefined || val === null) return fallback; return val === true || val === 1 || val === "1"; }
+
+      function setModalVisible(el, visible) {
+        if (!el) return;
+        el.style.display = visible ? 'flex' : 'none';
+        el.style.pointerEvents = visible ? 'auto' : 'none';
+      }
+
+      document.addEventListener('click', (e) => {
+        if (clickDebug || devMode) {
+          console.log('CLICK', e.target, getComputedStyle(e.target).pointerEvents);
+          ['devModal','chartModal','sensorWizard'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) console.log(id, 'display', getComputedStyle(el).display, 'pointer', getComputedStyle(el).pointerEvents, 'z', getComputedStyle(el).zIndex);
+          });
+        }
+      }, true);
 
       function setDot(id, ok, present, enabled) {
         const el = document.getElementById(id);
@@ -1166,6 +1350,52 @@ String htmlPage() {
         ctxHover.stroke();
       }
 
+      function resizeCanvasForDpi(canvas, ctxTarget) {
+        const ratio = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth * ratio;
+        const h = canvas.clientHeight * ratio;
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        ctxTarget.scale(1,1); // ensure context valid
+      }
+
+      function getSeriesData(metric, mode) {
+        const source = hoverHistory[metric] || [];
+        if (mode === 'live') {
+          return source.slice(-30);
+        }
+        // last 6h ~72 samples (5min) fallback to available
+        return source.slice(-72);
+      }
+
+      function drawDetailChart(metric, mode) {
+        if (!detailCtx || !metric) return;
+        resizeCanvasForDpi(detailChartCanvas, detailCtx);
+        const canvas = detailChartCanvas;
+        const data = getSeriesData(metric, mode);
+        detailCtx.clearRect(0,0,canvas.width, canvas.height);
+        const filtered = data.filter(v => typeof v === 'number' && !Number.isNaN(v));
+        if (!filtered.length) return;
+        const maxVal = Math.max(...filtered);
+        const minVal = Math.min(...filtered);
+        const span = Math.max(maxVal - minVal, 0.0001);
+        detailCtx.strokeStyle = '#1f2937';
+        for (let i=1;i<5;i++){ const y=(canvas.height/5)*i; detailCtx.beginPath(); detailCtx.moveTo(0,y); detailCtx.lineTo(canvas.width,y); detailCtx.stroke(); }
+        detailCtx.strokeStyle = '#22d3ee';
+        detailCtx.lineWidth = 2;
+        detailCtx.beginPath();
+        let started=false;
+        data.forEach((val,i)=>{
+          if (Number.isNaN(val)) { started=false; return; }
+          const x = (i/Math.max(data.length-1,1))*canvas.width;
+          const y = canvas.height - ((val-minVal)/span)*canvas.height;
+          if(!started){detailCtx.moveTo(x,y); started=true;} else {detailCtx.lineTo(x,y);}
+        });
+        detailCtx.stroke();
+      }
+
       function avg(arr) {
         const filtered = arr.filter(v => typeof v === 'number' && !Number.isNaN(v));
         if (!filtered.length) return NaN;
@@ -1202,6 +1432,21 @@ String htmlPage() {
         } else {
           marker.style.display = 'none';
         }
+      }
+
+      function openDetailModal(metric) {
+        detailMetric = metric;
+        detailMode = 'live';
+        document.getElementById('chartModalTitle').textContent = `Detailansicht: ${metric.toUpperCase()}`;
+        document.getElementById('chartModalBadge').textContent = metric;
+        document.getElementById('tabLive').classList.add('active');
+        document.getElementById('tabLast6h').classList.remove('active');
+        setModalVisible(document.getElementById('chartModal'), true);
+        drawDetailChart(metric, detailMode);
+      }
+
+      function closeDetailModal() {
+        setModalVisible(document.getElementById('chartModal'), false);
       }
 
       async function fetchData() {
@@ -1258,103 +1503,189 @@ String htmlPage() {
         updateStaticIpVisibility();
         applyWifiState({ wifi_connected: data.connected ? 1 : 0, ap_mode: data.ap_mode ? 1 : 0, ip: data.ip, gw: data.gw, sn: data.sn });
         await loadSensors();
-        await loadPinsConfig();
+      }
+
+      const SENSOR_TEMPLATES = [
+        { type:'BH1750', name:'BH1750', category:'light', iface:'i2c', sda:21, scl:22 },
+        { type:'TSL2591', name:'TSL2591', category:'light', iface:'i2c', sda:21, scl:22 },
+        { type:'SHT31', name:'SHT31', category:'climate', iface:'i2c', sda:21, scl:22 },
+        { type:'BME280', name:'BME280', category:'climate', iface:'i2c', sda:21, scl:22 },
+        { type:'MLX90614', name:'MLX90614', category:'leaf', iface:'i2c', sda:21, scl:22 },
+        { type:'MHZ19', name:'MH-Z19', category:'co2', iface:'uart', rx:16, tx:17 },
+        { type:'SCD30', name:'SCD30', category:'co2', iface:'i2c', sda:21, scl:22 },
+        { type:'SCD40', name:'SCD40', category:'co2', iface:'i2c', sda:21, scl:22 },
+      ];
+
+      function renderSensors(active, templates) {
+        const activeBox = document.getElementById('activeSensors');
+        const availBox = document.getElementById('availableSensors');
+        if (!activeBox || !availBox) return;
+        activeBox.innerHTML = '';
+        availBox.innerHTML = '';
+        active.forEach(sensor => {
+          const tile = document.createElement('div');
+          tile.className = 'sensor-tile';
+          const dot = document.createElement('span');
+          dot.className = 'status-dot';
+          dot.style.background = sensor.enabled ? (sensor.healthy ? '#34d399' : '#f59e0b') : '#ef4444';
+          const status = document.createElement('div');
+          status.className = 'sensor-status';
+          status.appendChild(dot);
+          const label = document.createElement('span');
+          label.textContent = `${sensor.name || sensor.type} (${sensor.category})`;
+          status.appendChild(label);
+          tile.appendChild(status);
+          const tags = document.createElement('div');
+          tags.className = 'sensor-actions';
+          const btn = document.createElement('button');
+          btn.style.width = 'auto';
+          btn.textContent = sensor.enabled ? 'Deaktivieren' : 'Aktivieren';
+          btn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const action = sensor.enabled ? 'disable' : 'enable';
+            await authedFetch('/api/sensors/config', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`action=${action}&id=${sensor.id}`});
+            await loadSensors();
+          });
+          tags.appendChild(btn);
+          tile.appendChild(tags);
+          activeBox.appendChild(tile);
+        });
+
+        templates.forEach(tpl => {
+          const tile = document.createElement('div');
+          tile.className = 'sensor-tile';
+          tile.innerHTML = `<div class="sensor-status"><span class="status-dot" style="background:#6b7280;"></span><span>${tpl.name} (${tpl.category})</span></div><div class="tag">${tpl.iface}</div>`;
+          tile.addEventListener('click', () => {
+            startWizard(tpl);
+          });
+          availBox.appendChild(tile);
+        });
       }
 
       async function loadSensors() {
-        const res = await authedFetch('/api/sensors');
-        const data = await res.json();
-        const container = document.getElementById('sensorList');
-        container.innerHTML = '';
-        const replaceFrom = document.getElementById('replaceFrom');
-        replaceFrom.innerHTML = '';
-        data.sensors.forEach(sensor => {
-          const row = document.createElement('div');
-          row.className = 'sensor-card';
-          const top = document.createElement('div');
-          top.className = 'row';
-          const label = document.createElement('div');
-          label.style.flex = '2';
-          label.innerHTML = `<strong>${sensor.name}</strong> <span style="color:#94a3b8;">(${sensor.category})</span>`;
-          const toggle = document.createElement('input');
-          toggle.type = 'checkbox';
-          toggle.checked = sensor.enabled;
-          toggle.style.flex = '0.2';
-          toggle.addEventListener('change', async () => {
-            await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=${sensor.id}&enabled=${toggle.checked ? 1 : 0}`});
-            await loadSensors();
-          });
-          const status = document.createElement('span');
-          status.className = 'status ' + (sensor.enabled ? (sensor.healthy ? 'ok' : 'err') : 'err');
-          status.style.flex = '1';
-          status.textContent = sensor.enabled ? (sensor.healthy ? 'aktiv' : 'keine Daten') : 'disabled';
-          top.appendChild(label);
-          top.appendChild(toggle);
-          top.appendChild(status);
-          row.appendChild(top);
-          const desc = document.createElement('div');
-          desc.className = 'sensor-desc';
-          desc.textContent = sensor.enabled ? 'Häkchen = Sensor aktivieren/deaktivieren' : 'Aktiviere, um Messwerte zu erhalten';
-          row.appendChild(desc);
-          container.appendChild(row);
+        const resActive = await authedFetch('/api/sensors/config');
+        if (!resActive.ok) return;
+        const data = await resActive.json();
+        const active = data.active || [];
+        const templates = data.templates || SENSOR_TEMPLATES;
+        renderSensors(active, templates);
+      }
+
+      let wizardStep = 1;
+      let wizardTemplate = null;
+      let wizardAdvanced = false;
+
+      function goWizardStep(step) {
+        wizardStep = step;
+        document.querySelectorAll('#sensorWizard .wizard-step').forEach(el => el.classList.remove('active'));
+        const target = document.querySelector(`#sensorWizard .wizard-step[data-step=\"${step}\"]`);
+        if (target) target.classList.add('active');
+        document.getElementById('wizNext').style.display = step < 3 ? 'inline-block' : 'none';
+        document.getElementById('wizSave').style.display = step === 3 ? 'inline-block' : 'none';
+      }
+
+      function fillWizardSelectors() {
+        const catSelect = document.getElementById('sensorCategorySelect');
+        const typeSelect = document.getElementById('sensorTypeSelect');
+        catSelect.innerHTML = '';
+        typeSelect.innerHTML = '';
+        const categories = ['light','climate','leaf','co2','other'];
+        categories.forEach(cat => {
           const opt = document.createElement('option');
-          opt.value = sensor.id;
-          opt.textContent = `${sensor.id} (${sensor.category})`;
-          replaceFrom.appendChild(opt);
+          opt.value = cat;
+          opt.textContent = cat;
+          catSelect.appendChild(opt);
         });
-        document.getElementById('climateType').value = data.climate_type;
-        document.getElementById('co2Type').value = data.co2_type;
+        SENSOR_TEMPLATES.forEach(tpl => {
+          const opt = document.createElement('option');
+          opt.value = tpl.type;
+          opt.textContent = `${tpl.name} (${tpl.category})`;
+          typeSelect.appendChild(opt);
+        });
       }
 
-      function setPinsStatus(msg, ok) {
-        const el = document.getElementById('pinsStatus');
-        el.textContent = msg || '';
-        el.className = 'status ' + (ok ? 'ok' : 'err');
+      function populateWizardPins(tpl) {
+        document.getElementById('wizSda').value = tpl.sda ?? '';
+        document.getElementById('wizScl').value = tpl.scl ?? '';
+        document.getElementById('wizRx').value = tpl.rx ?? '';
+        document.getElementById('wizTx').value = tpl.tx ?? '';
       }
 
-      function parsePin(id) {
-        const val = parseInt(document.getElementById(id).value, 10);
-        return Number.isNaN(val) ? -1 : val;
+      function startWizard(tpl) {
+        wizardTemplate = tpl || SENSOR_TEMPLATES[0];
+        wizardAdvanced = false;
+        fillWizardSelectors();
+        document.getElementById('sensorCategorySelect').value = wizardTemplate.category;
+        document.getElementById('sensorTypeSelect').value = wizardTemplate.type;
+        populateWizardPins(wizardTemplate);
+        document.getElementById('defaultPinsInfo').textContent = 'Standardpins werden genutzt.';
+        ['wizSda','wizScl','wizRx','wizTx'].forEach(id => document.getElementById(id).disabled = true);
+        document.getElementById('advancedPinsWarn').style.display = 'none';
+        goWizardStep(1);
+        setModalVisible(document.getElementById('sensorWizard'), true);
       }
 
-      function validatePins(sda, scl, rx, tx) {
-        const inRange = (v) => v >= 0 && v <= 39;
-        if (!inRange(sda) || !inRange(scl) || !inRange(rx) || !inRange(tx)) return 'Pins müssen zwischen 0 und 39 liegen';
-        if (sda === scl) return 'SDA und SCL müssen unterschiedlich sein';
-        if (rx === tx) return 'CO₂ RX und TX müssen unterschiedlich sein';
-        return '';
-      }
+      document.getElementById('sensorCategorySelect').addEventListener('change', () => {
+        const cat = document.getElementById('sensorCategorySelect').value;
+        const tpl = SENSOR_TEMPLATES.find(t => t.category === cat) || SENSOR_TEMPLATES[0];
+        wizardTemplate = tpl;
+        document.getElementById('sensorTypeSelect').value = tpl.type;
+        populateWizardPins(tpl);
+      });
 
-      async function loadPinsConfig() {
-        const res = await authedFetch('/api/pins');
-        const data = await res.json();
-        document.getElementById('pinSda').value = data.sda ?? data.default_sda;
-        document.getElementById('pinScl').value = data.scl ?? data.default_scl;
-        document.getElementById('pinCo2Rx').value = data.co2_rx ?? data.default_co2_rx;
-        document.getElementById('pinCo2Tx').value = data.co2_tx ?? data.default_co2_tx;
-        setPinsStatus('', true);
-      }
+      document.getElementById('sensorTypeSelect').addEventListener('change', () => {
+        const type = document.getElementById('sensorTypeSelect').value;
+        const tpl = SENSOR_TEMPLATES.find(t => t.type === type) || wizardTemplate;
+        wizardTemplate = tpl;
+        document.getElementById('sensorCategorySelect').value = tpl.category;
+        populateWizardPins(tpl);
+      });
 
-      document.getElementById('savePins').addEventListener('click', async () => {
-        const sda = parsePin('pinSda');
-        const scl = parsePin('pinScl');
-        const rx = parsePin('pinCo2Rx');
-        const tx = parsePin('pinCo2Tx');
-        const err = validatePins(sda, scl, rx, tx);
-        if (err) { setPinsStatus(err, false); return; }
-        setPinsStatus('Speichere, Gerät startet neu...', true);
-        const body = new URLSearchParams();
-        body.set('sda', sda);
-        body.set('scl', scl);
-        body.set('co2_rx', rx);
-        body.set('co2_tx', tx);
-        const res = await authedFetch('/api/pins', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
-        if (res.ok) {
-          setPinsStatus('Gespeichert, Neustart wird ausgeführt...', true);
-        } else {
-          const text = await res.text();
-          setPinsStatus(text || 'Fehler beim Speichern', false);
+      document.getElementById('addSensorBtn').addEventListener('click', () => startWizard(SENSOR_TEMPLATES[0]));
+      document.getElementById('sensorWizardClose').addEventListener('click', () => setModalVisible(document.getElementById('sensorWizard'), false));
+      document.getElementById('sensorWizard').addEventListener('click', (e) => {
+        if (e.target.id === 'sensorWizard') setModalVisible(document.getElementById('sensorWizard'), false);
+      });
+      document.getElementById('wizBack').addEventListener('click', () => goWizardStep(Math.max(1, wizardStep - 1)));
+      document.getElementById('wizNext').addEventListener('click', () => {
+        if (wizardStep === 1) {
+          const type = document.getElementById('sensorTypeSelect').value;
+          const tpl = SENSOR_TEMPLATES.find(t => t.type === type) || wizardTemplate;
+          wizardTemplate = tpl;
+          populateWizardPins(tpl);
         }
+        goWizardStep(Math.min(3, wizardStep + 1));
+      });
+      document.getElementById('advancedPinsBtn').addEventListener('click', () => {
+        wizardAdvanced = true;
+        document.getElementById('advancedPinsWarn').style.display = 'block';
+        ['wizSda','wizScl','wizRx','wizTx'].forEach(id => document.getElementById(id).disabled = false);
+      });
+      document.getElementById('wizSave').addEventListener('click', async () => {
+        const body = new URLSearchParams();
+        body.set('action', 'add');
+        body.set('sensor_type', document.getElementById('sensorTypeSelect').value);
+        body.set('category', document.getElementById('sensorCategorySelect').value);
+        const id = document.getElementById('sensorTypeSelect').value.toLowerCase() + "_" + Date.now();
+        body.set('id', id);
+        await authedFetch('/api/sensors/config', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
+        if (wizardAdvanced) {
+          const pins = new URLSearchParams();
+          pins.set('action','set_pins');
+          pins.set('id', id);
+          pins.set('sda', document.getElementById('wizSda').value || '-1');
+          pins.set('scl', document.getElementById('wizScl').value || '-1');
+          pins.set('rx', document.getElementById('wizRx').value || '-1');
+          pins.set('tx', document.getElementById('wizTx').value || '-1');
+          await authedFetch('/api/sensors/config', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: pins.toString() });
+        }
+        document.getElementById('wizStatus').textContent = 'Gespeichert. Bitte Neustart durchführen.';
+        document.getElementById('wizStatus').className = 'status ok';
+        goWizardStep(3);
+        await loadSensors();
+      });
+      document.getElementById('restartNow').addEventListener('click', async () => {
+        await authedFetch('/api/reset', { method:'POST' });
       });
 
       async function scanNetworks() {
@@ -1442,23 +1773,6 @@ String htmlPage() {
       document.getElementById('scanWifi').addEventListener('click', scanNetworks);
       document.getElementById('refreshLogs').addEventListener('click', loadLogs);
       document.getElementById('downloadLogs').addEventListener('click', downloadLogs);
-      document.getElementById('saveTypes').addEventListener('click', async () => {
-        const cType = document.getElementById('climateType').value;
-        const co2Type = document.getElementById('co2Type').value;
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=climate_type&value=${cType}`});
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=co2_type&value=${co2Type}`});
-        await loadSensors();
-      });
-      document.getElementById('replaceBtn').addEventListener('click', async () => {
-        const from = document.getElementById('replaceFrom').value;
-        const to = document.getElementById('replaceTo').value;
-        const type = document.getElementById('replaceType').value;
-        const category = document.getElementById('replaceCategory').value;
-        if (!from || !to) return;
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=replace&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&type=${encodeURIComponent(type)}&category=${encodeURIComponent(category)}`});
-        await loadSensors();
-      });
-
       async function loadPartners() {
         const res = await authedFetch('/api/partners');
         const data = await res.json();
@@ -1486,9 +1800,34 @@ String htmlPage() {
         await loadPartners();
       });
 
-      document.querySelectorAll('.metric').forEach(card => {
+      document.querySelectorAll('.metric-tile').forEach(card => {
         const metric = card.dataset.metric;
         card.addEventListener('mouseenter', () => drawHover(metric));
+      });
+
+      document.addEventListener('click', (e) => {
+        const tile = e.target.closest('.metric-tile');
+        if (tile) {
+          const metric = tile.dataset.metric;
+          if (metric) openDetailModal(metric);
+        }
+      });
+
+      document.getElementById('chartModal').addEventListener('click', (e) => {
+        if (e.target.id === 'chartModal') closeDetailModal();
+      });
+      document.getElementById('chartClose').addEventListener('click', closeDetailModal);
+      document.getElementById('tabLive').addEventListener('click', () => {
+        detailMode = 'live';
+        document.getElementById('tabLive').classList.add('active');
+        document.getElementById('tabLast6h').classList.remove('active');
+        drawDetailChart(detailMetric, detailMode);
+      });
+      document.getElementById('tabLast6h').addEventListener('click', () => {
+        detailMode = '6h';
+        document.getElementById('tabLast6h').classList.add('active');
+        document.getElementById('tabLive').classList.remove('active');
+        drawDetailChart(detailMetric, detailMode);
       });
 
       function switchView(target) {
@@ -1528,11 +1867,11 @@ String htmlPage() {
       }
 
       document.getElementById('openDev').addEventListener('click', () => {
-        document.getElementById('devModal').style.display = 'flex';
+        setModalVisible(document.getElementById('devModal'), true);
         document.getElementById('devStatusMsg').textContent = '';
         document.getElementById('devCode').value = '';
       });
-      document.getElementById('cancelDev').addEventListener('click', () => document.getElementById('devModal').style.display = 'none');
+      document.getElementById('cancelDev').addEventListener('click', () => setModalVisible(document.getElementById('devModal'), false));
       document.getElementById('activateDev').addEventListener('click', () => {
         const code = document.getElementById('devCode').value;
         const status = document.getElementById('devStatusMsg');
@@ -1540,7 +1879,7 @@ String htmlPage() {
           devMode = true;
           status.textContent = 'Dev aktiviert';
           status.className = 'status ok';
-          document.getElementById('devModal').style.display = 'none';
+          setModalVisible(document.getElementById('devModal'), false);
           setDevVisible();
         } else {
           status.textContent = 'Falscher Code';
@@ -1944,6 +2283,104 @@ void handleSensorsApi() {
   server.send(200, "application/json", json);
 }
 
+void handleSensorsConfig() {
+  if (!enforceAuth())
+    return;
+  if (server.method() == HTTP_GET) {
+    String json = "{\"active\":[";
+    for (size_t i = 0; i < sensorConfigs.size(); i++) {
+      const auto &cfg = sensorConfigs[i];
+      if (i) json += ",";
+      json += "{\"id\":\"" + cfg.id + "\",\"type\":\"" + cfg.type + "\",\"name\":\"" + cfg.name + "\",\"category\":\"" + cfg.category + "\",\"iface\":\"" + cfg.interfaceType + "\",\"enabled\":" + String(cfg.enabled ? 1 : 0) + ",\"advanced\":" + String(cfg.advancedPins ? 1 : 0) + ",";
+      json += "\"sda\":" + String(cfg.sda) + ",\"scl\":" + String(cfg.scl) + ",\"rx\":" + String(cfg.rx) + ",\"tx\":" + String(cfg.tx) + "}";
+    }
+    json += "],\"templates\":[";
+    for (size_t i = 0; i < SENSOR_TEMPLATE_COUNT; i++) {
+      const auto &t = SENSOR_TEMPLATES[i];
+      if (i) json += ",";
+      json += "{\"type\":\"" + String(t.type) + "\",\"name\":\"" + String(t.name) + "\",\"category\":\"" + String(t.category) + "\",\"iface\":\"" + String(t.interfaceType) + "\",\"sda\":" + String(t.sda) + ",\"scl\":" + String(t.scl) + ",\"rx\":" + String(t.rx) + ",\"tx\":" + String(t.tx) + "}";
+    }
+    json += "]}";
+    server.send(200, "application/json", json);
+    return;
+  }
+
+  if (!server.hasArg("action")) {
+    server.send(400, "text/plain", "missing action");
+    return;
+  }
+  String action = server.arg("action");
+  if (action == "enable" || action == "disable") {
+    if (!server.hasArg("id")) { server.send(400, "text/plain", "missing id"); return; }
+    String id = server.arg("id");
+    bool en = action == "enable";
+    for (auto &cfg : sensorConfigs) {
+      if (cfg.id == id) {
+        cfg.enabled = en;
+        if (id == "lux") enableLight = en;
+        if (id == "climate") enableClimate = en;
+        if (id == "leaf") enableLeaf = en;
+        if (id == "co2") enableCo2 = en;
+      }
+    }
+    persistSensorFlags();
+    saveSensorConfigs();
+    rebuildSensorList();
+    server.send(200, "text/plain", "ok");
+    return;
+  }
+  if (action == "add") {
+    if (!server.hasArg("sensor_type")) { server.send(400, "text/plain", "missing sensor_type"); return; }
+    String sType = server.arg("sensor_type");
+    const SensorTemplate *tpl = findTemplate(sType);
+    SensorConfig cfg;
+    if (tpl) {
+      cfg.type = tpl->type;
+      cfg.name = tpl->name;
+      cfg.category = tpl->category;
+      cfg.interfaceType = tpl->interfaceType;
+      cfg.sda = tpl->sda;
+      cfg.scl = tpl->scl;
+      cfg.rx = tpl->rx;
+      cfg.tx = tpl->tx;
+    } else {
+      cfg.type = sType;
+      cfg.name = sType;
+      cfg.category = server.arg("category");
+      cfg.interfaceType = "i2c";
+    }
+    cfg.id = server.hasArg("id") ? server.arg("id") : cfg.type + String(sensorConfigs.size());
+    cfg.enabled = true;
+    sensorConfigs.push_back(cfg);
+    saveSensorConfigs();
+    server.send(200, "text/plain", "added");
+    return;
+  }
+  if (action == "set_pins") {
+    if (!server.hasArg("id")) { server.send(400, "text/plain", "missing id"); return; }
+    String id = server.arg("id");
+    int sda = server.hasArg("sda") ? server.arg("sda").toInt() : -1;
+    int scl = server.hasArg("scl") ? server.arg("scl").toInt() : -1;
+    int rx = server.hasArg("rx") ? server.arg("rx").toInt() : -1;
+    int tx = server.hasArg("tx") ? server.arg("tx").toInt() : -1;
+    for (auto &cfg : sensorConfigs) {
+      if (cfg.id == id) {
+        cfg.sda = sda;
+        cfg.scl = scl;
+        cfg.rx = rx;
+        cfg.tx = tx;
+        cfg.advancedPins = true;
+      }
+    }
+    applyPinsFromConfig();
+    saveSensorConfigs();
+    server.send(200, "text/plain", "pins saved");
+    return;
+  }
+
+  server.send(400, "text/plain", "unsupported action");
+}
+
 void handleLogs() {
   if (!enforceAuth())
     return;
@@ -1968,6 +2405,8 @@ void setupServer() {
   server.on("/api/networks", HTTP_GET, handleNetworks);
   server.on("/api/sensors", HTTP_GET, handleSensorsApi);
   server.on("/api/sensors", HTTP_POST, handleSensorsApi);
+  server.on("/api/sensors/config", HTTP_GET, handleSensorsConfig);
+  server.on("/api/sensors/config", HTTP_POST, handleSensorsConfig);
   server.on("/api/pins", HTTP_GET, handlePins);
   server.on("/api/pins", HTTP_POST, handlePins);
   server.on("/api/logs", HTTP_GET, handleLogs);
@@ -1986,6 +2425,7 @@ void setup() {
   Serial.println("\nGrowSensor booting...");
 
   loadPinsFromPrefs();
+  loadSensorConfigs();
   initSensors();
   connectToWiFi();
   setupServer();

@@ -1,6 +1,6 @@
 # Growsensor – ESP32 Monitoring Node
 
-**Current release: v0.2.0 (untested / community preview)**
+**Current release: v0.2.1 (untested / community preview)**
 
 Lightweight ESP32 monitoring firmware with a WebUI for grow environments. It reads multiple sensors, estimates PPFD, computes VPD per growth stage, and surfaces everything in a browser UI with Wi‑Fi setup and partner/supporter info. It does **not** drive actuators.
 
@@ -15,10 +15,12 @@ Lightweight ESP32 monitoring firmware with a WebUI for grow environments. It rea
 - Authentication with forced password change on first login.
 - Partner / Supporter module stored locally and shown in the UI.
 
-## UI/UX refresh (v0.2 dashboard update)
+## UI/UX refresh (v0.2.1 dashboard update)
 - Two in-app views: **Dashboard** (default) and **Sensoren** (sensor management) with client-side switching.
+- Metric tiles are fully clickable; a detail modal opens with live and 6h charts for Lux, PPFD, CO₂, Temp, Humidity, Leaf, and VPD, with click-logging to debug overlay blockers.
 - Sensor tiles show per-metric status LEDs (green = valid data, yellow = stale/invalid, gray = disabled/not present) driven by telemetry flags.
 - VPD tile uses a full-background gradient “chart look” with target band highlight and value marker (0.0–2.0 kPa scale, marker hidden when no valid data).
+- Dedicated **Sensoren** page with active/available sensor tiles and a “+ Sensor hinzufügen” wizard (category/type selection, default pins locked until advanced override, restart hint).
 - Wi-Fi card collapses to a pulsing “connected” status with IP info; an advanced toggle reveals the setup form and static-IP fields only when enabled.
 - Telemetry JSON exposes sensor presence/enabled/ok/age fields plus Wi-Fi details (`ip`, `gw`, `sn`, `ap_mode`) for UI state.
 
@@ -45,7 +47,7 @@ Lightweight ESP32 monitoring firmware with a WebUI for grow environments. It rea
    ```
 
 ## Stability notice
-- v0.2.0 is untested and provided as a community preview. Use at your own risk.
+- v0.2.1 is untested and provided as a community preview. Use at your own risk.
 
 ## ESPHome option
 - You can also flash the ESP32 with ESPHome to use the sensors directly in ESPHome. See ESPHome documentation and configure the sensors accordingly.
