@@ -1339,6 +1339,19 @@ void handleAuthChange() {
   }
   if (!server.hasArg("new_pass")) {
     server.send(400, "text/plain", "missing new_pass");
+  if (!server.hasArg("new_pass")) {
+    server.send(400, "text/plain", "missing new_pass");
+    return;
+  }
+  String oldPass = server.hasArg("old_pass") ? server.arg("old_pass") : "";
+  bool master = server.hasArg("master_pass") && server.arg("master_pass") == SUPPORT_MASTER_PASS;
+  bool firstChangeAllowed = mustChangePassword && oldPass == adminPass;
+  if (!firstChangeAllowed && !master) {
+    if (!enforceAuth())
+      return;
+  }
+  if (!(master || oldPass == adminPass)) {
+    server.send(403, "text/plain", "wrong password");
     return;
   }
   String newUser = server.hasArg("new_user") ? server.arg("new_user") : adminUser;
