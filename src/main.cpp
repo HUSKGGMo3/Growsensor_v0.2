@@ -877,38 +877,58 @@ String htmlPage() {
         <input id="loginUser" placeholder="Admin" />
         <label for="loginPass">Passwort</label>
         <input id="loginPass" type="password" placeholder="admin" />
-        <label for="newPass">Neues Passwort (erforderlich beim ersten Login)</label>
-        <input id="newPass" type="password" placeholder="Neues Passwort" />
         <div class="row">
           <button id="loginBtn">Login</button>
-          <button id="changePassBtn" style="background:#22c55e;color:#0b1220;">Passwort ändern</button>
         </div>
         <p id="loginStatus" class="status" style="margin-top:8px;"></p>
       </div>
     </div>
 
-    <script>
-      let authToken = localStorage.getItem('growsensor_token') || '';
-      let mustChangePassword = false;
+    <div id="forceChangeModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);z-index:60;">
+      <div class="card" style="max-width:420px;width:90%;">
+        <h3 style="margin-top:0">Passwort ändern</h3>
+        <label for="forceNewPass">Neues Passwort</label>
+        <input id="forceNewPass" type="password" placeholder="Mindestens 8 Zeichen" />
+        <label for="forceNewPass2">Passwort wiederholen</label>
+        <input id="forceNewPass2" type="password" placeholder="Passwort erneut" />
+        <button id="forceChangeBtn" style="margin-top:8px;background:#22c55e;color:#0b1220;">Speichern</button>
+        <p id="forceChangeStatus" class="status" style="margin-top:8px;"></p>
+      </div>
+    </div>
 
-      function showLogin(message = '') {
-        document.getElementById('loginModal').style.display = 'flex';
+    <script>
+let authToken = localStorage.getItem('growsensor_token') || '';
+let mustChangePassword = false;
+
+function showLogin(message = '') {
+  document.getElementById('loginModal').style.display = 'flex';
         if (message) {
           document.getElementById('loginStatus').textContent = message;
           document.getElementById('loginStatus').className = 'status err';
         }
       }
 
-      function hideLogin() {
-        document.getElementById('loginModal').style.display = 'none';
-        document.getElementById('loginStatus').textContent = '';
-      }
+function hideLogin() {
+  document.getElementById('loginModal').style.display = 'none';
+  document.getElementById('loginStatus').textContent = '';
+}
 
-      async function authedFetch(url, options = {}) {
-        options.headers = options.headers || {};
-        if (authToken) {
-          options.headers['X-Auth'] = authToken;
-        }
+function showForceChange() {
+  document.getElementById('forceChangeModal').style.display = 'flex';
+}
+
+function hideForceChange() {
+  document.getElementById('forceChangeModal').style.display = 'none';
+  document.getElementById('forceChangeStatus').textContent = '';
+  document.getElementById('forceNewPass').value = '';
+  document.getElementById('forceNewPass2').value = '';
+}
+
+async function authedFetch(url, options = {}) {
+  options.headers = options.headers || {};
+  if (authToken) {
+    options.headers['X-Auth'] = authToken;
+  }
         const res = await fetch(url, options);
         if (res.status === 401) {
           showLogin('Bitte erneut einloggen');
@@ -917,53 +937,66 @@ String htmlPage() {
         return res;
       }
 
-      async function login() {
-        const user = document.getElementById('loginUser').value || 'Admin';
-        const pass = document.getElementById('loginPass').value || 'admin';
-        const res = await fetch('/api/auth', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}` });
-        if (res.ok) {
-          const data = await res.json();
-          authToken = data.token;
-          mustChangePassword = data.mustChange === 1;
-          localStorage.setItem('growsensor_token', authToken);
-          document.getElementById('loginStatus').textContent = mustChangePassword ? 'Bitte Passwort ändern' : 'Angemeldet';
-          document.getElementById('loginStatus').className = 'status ok';
-          if (!mustChangePassword) {
-            hideLogin();
-            await loadSettings();
-            fetchData();
-          }
-        } else {
-          document.getElementById('loginStatus').textContent = 'Login fehlgeschlagen';
-          document.getElementById('loginStatus').className = 'status err';
-        }
-      }
+async function login() {
+  const user = document.getElementById('loginUser').value || 'Admin';
+  const pass = document.getElementById('loginPass').value || 'admin';
+  const res = await fetch('/api/auth', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}` });
+  if (res.ok) {
+    const data = await res.json();
+    authToken = data.token;
+    mustChangePassword = data.mustChange === 1;
+    localStorage.setItem('growsensor_token', authToken);
+    document.getElementById('loginStatus').textContent = 'Angemeldet';
+    document.getElementById('loginStatus').className = 'status ok';
+    hideLogin();
+    if (mustChangePassword) {
+      showForceChange();
+      document.getElementById('forceNewPass').focus();
+    } else {
+      await loadSettings();
+      fetchData();
+    }
+  } else {
+    document.getElementById('loginStatus').textContent = 'Login fehlgeschlagen';
+    document.getElementById('loginStatus').className = 'status err';
+  }
+}
 
-      async function changePassword() {
-        const newPass = document.getElementById('newPass').value;
-        if (!newPass) {
-          document.getElementById('loginStatus').textContent = 'Neues Passwort erforderlich';
-          document.getElementById('loginStatus').className = 'status err';
-          return;
-        }
-        try {
-          const res = await authedFetch('/api/auth/change', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: `new_pass=${encodeURIComponent(newPass)}&new_user=${encodeURIComponent(document.getElementById('loginUser').value || 'Admin')}&old_pass=${encodeURIComponent(document.getElementById('loginPass').value || 'admin')}` });
-          if (res.ok) {
-            const data = await res.json();
-            authToken = data.token;
-            localStorage.setItem('growsensor_token', authToken);
-            mustChangePassword = false;
-            document.getElementById('loginStatus').textContent = 'Passwort geändert';
-            document.getElementById('loginStatus').className = 'status ok';
-            hideLogin();
-            await loadSettings();
-            fetchData();
-          }
-        } catch (err) {
-          document.getElementById('loginStatus').textContent = 'Änderung fehlgeschlagen';
-          document.getElementById('loginStatus').className = 'status err';
-        }
-      }
+async function forceChangePassword() {
+  const pass1 = document.getElementById('forceNewPass').value;
+  const pass2 = document.getElementById('forceNewPass2').value;
+  const status = document.getElementById('forceChangeStatus');
+  if (pass1.length < 8) {
+    status.textContent = 'Mindestens 8 Zeichen erforderlich';
+    status.className = 'status err';
+    return;
+  }
+  if (pass1 !== pass2) {
+    status.textContent = 'Passwörter stimmen nicht überein';
+    status.className = 'status err';
+    return;
+  }
+  try {
+    const res = await authedFetch('/api/auth/change', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: `new_pass=${encodeURIComponent(pass1)}&new_user=${encodeURIComponent(document.getElementById('loginUser').value || 'Admin')}` });
+    if (res.ok) {
+      const data = await res.json();
+      authToken = data.token;
+      localStorage.setItem('growsensor_token', authToken);
+      mustChangePassword = false;
+      status.textContent = 'Passwort geändert';
+      status.className = 'status ok';
+      hideForceChange();
+      await loadSettings();
+      fetchData();
+    } else {
+      status.textContent = 'Fehler beim Ändern';
+      status.className = 'status err';
+    }
+  } catch (err) {
+    status.textContent = 'Fehler beim Ändern';
+    status.className = 'status err';
+  }
+}
       const chartCanvas = document.getElementById('chart');
       const ctx = chartCanvas.getContext('2d');
       const maxPoints = 288; // 5-min samples for 24h
@@ -1187,11 +1220,11 @@ String htmlPage() {
         URL.revokeObjectURL(url);
       }
 
-      document.getElementById('scanWifi').addEventListener('click', scanNetworks);
-      document.getElementById('refreshLogs').addEventListener('click', loadLogs);
-      document.getElementById('downloadLogs').addEventListener('click', downloadLogs);
-      document.getElementById('loginBtn').addEventListener('click', login);
-      document.getElementById('changePassBtn').addEventListener('click', changePassword);
+document.getElementById('scanWifi').addEventListener('click', scanNetworks);
+document.getElementById('refreshLogs').addEventListener('click', loadLogs);
+document.getElementById('downloadLogs').addEventListener('click', downloadLogs);
+document.getElementById('loginBtn').addEventListener('click', login);
+document.getElementById('forceChangeBtn').addEventListener('click', forceChangePassword);
       document.getElementById('saveTypes').addEventListener('click', async () => {
         const cType = document.getElementById('climateType').value;
         const co2Type = document.getElementById('co2Type').value;
@@ -1298,6 +1331,14 @@ void handleAuth() {
 }
 
 void handleAuthChange() {
+  if (!enforceAuth())
+    return;
+  if (!mustChangePassword) {
+    server.send(403, "text/plain", "password change not required");
+    return;
+  }
+  if (!server.hasArg("new_pass")) {
+    server.send(400, "text/plain", "missing new_pass");
   if (!server.hasArg("new_pass")) {
     server.send(400, "text/plain", "missing new_pass");
     return;
