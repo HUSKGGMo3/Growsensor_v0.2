@@ -2,64 +2,25 @@
 
 **Current release: v0.2.0 (untested / community preview)**
 
-Growsensor is an all-in-one ESP32 monitoring node for indoor grows. It solves basic telemetry and visibility: reads multiple sensors, estimates PPFD, computes VPD per growth stage, and shows everything in a web UI with Wi-Fi setup and simple partner/supporter info. It does **not** drive any actuators.
-
-Growsensor (monitoring) vs. future Growcontroller (control): this project only collects and visualizes data. A separate future Growcontroller project will handle automation and device control once ready.
-
-# ESP32 Grow Sensor / Monitoring Node
-
-**Current release: v0.2.0 (untested / community preview)**
-
-Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provides sensor telemetry, PPFD/VPD insights, Wi-Fi setup, and a partner/supporter module. No actuator control is implemented yet.
-
-
+Lightweight ESP32 monitoring firmware with a WebUI for grow environments. It reads multiple sensors, estimates PPFD, computes VPD per growth stage, and surfaces everything in a browser UI with Wi‑Fi setup and partner/supporter info. It does **not** drive actuators.
 
 ## What this project is / is not
 - Monitoring only: reads sensors, computes PPFD/VPD, shows dashboards and logs.
 - No actuator control yet: no relays or automation are driven by this firmware.
 
-
-
-# ESP32 Grow Sensor / Monitoring Node
-
-**Current release: v0.2.0 (untested / community preview)**
-
-Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provides sensor telemetry, PPFD/VPD insights, Wi-Fi setup, and a partner/supporter module. No actuator control is implemented yet.
-
-
-## What this project is / is not
-- Monitoring only: reads sensors, computes PPFD/VPD, shows dashboards and logs.
-- No actuator control yet: no relays or automation are driven by this firmware.
-
-
+## Features (as of v0.2.x)
 - Sensor monitoring: Temp, Humidity, CO₂, Lux → PPFD, Leaf Temp.
 - VPD calculation with growth stages (seedling/veg/bloom/late bloom) and status (under / in / over target).
 - Web-based UI with captive portal setup, live dashboard, 24h chart, averages, and logs.
 - Authentication with forced password change on first login.
 - Partner / Supporter module stored locally and shown in the UI.
 
-## Planned / Future
-- Growcontroller (automation and device control)
-- Stabilization, long-term testing, and production readiness
-- Additional sensor/driver coverage and usability improvements
-
-**Current release: v0.2.0 (untested / community preview)**
-
-Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provides sensor telemetry, PPFD/VPD insights, Wi-Fi setup, and a partner/supporter module. No actuator control is implemented yet.
-
-## What this project is / is not
-- Monitoring only: reads sensors, computes PPFD/VPD, shows dashboards and logs.
-- No actuator control yet: no relays or automation are driven by this firmware.
-
-
-## Features (as of v0.2.0)
-- Sensor monitoring: Temp, Humidity, CO₂, Lux → PPFD, Leaf Temp.
-- VPD calculation with growth stages (seedling/veg/bloom/late bloom) and status (under / in / over target).
-- Web-based UI with captive portal setup, live dashboard, 24h chart, averages, and logs.
-- Authentication with forced password change on first login.
-- Partner / Supporter module stored locally and shown in the UI.
-
-
+## UI/UX refresh (v0.2 dashboard update)
+- Two in-app views: **Dashboard** (default) and **Sensoren** (sensor management) with client-side switching.
+- Sensor tiles show per-metric status LEDs (green = valid data, yellow = stale/invalid, gray = disabled/not present) driven by telemetry flags.
+- VPD tile uses a full-background gradient “chart look” with target band highlight and value marker (0.0–2.0 kPa scale, marker hidden when no valid data).
+- Wi-Fi card collapses to a pulsing “connected” status with IP info; an advanced toggle reveals the setup form and static-IP fields only when enabled.
+- Telemetry JSON exposes sensor presence/enabled/ok/age fields plus Wi-Fi details (`ip`, `gw`, `sn`, `ap_mode`) for UI state.
 
 ## Supported Hardware
 - ESP32 (classic, Arduino framework)
@@ -69,7 +30,7 @@ Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provid
 ## Security & Login
 - Default login: `Admin` / `admin`
 - Password change is required on first login before Wi-Fi changes are allowed.
-- A master password exists for recovery; it is not exposed here—set your own at build time if needed.
+- A master password exists for recovery; set your own at build time if needed.
 
 ## Build & Flash (PlatformIO)
 1. Install PlatformIO CLI or VS Code + PlatformIO extension.
@@ -87,23 +48,14 @@ Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provid
 - v0.2.0 is untested and provided as a community preview. Use at your own risk.
 
 ## ESPHome option
-- Du kannst den ESP32 auch mit ESPHome flashen, um die Sensoren direkt in ESPHome zu nutzen. Lies dazu die ESPHome-Dokumentation und hinterlege die Sensoren korrekt in deiner ESPHome-Konfiguration.
+- You can also flash the ESP32 with ESPHome to use the sensors directly in ESPHome. See ESPHome documentation and configure the sensors accordingly.
 
 ## License
 - Non-commercial open source license (see `LICENSE`). You may view, use, and modify the code and contribute via pull requests.
 - Commercial use (including selling devices or services, or paid products) requires explicit permission.
 - Contributions are welcome; modified versions must keep the same license and attribution.
-- Deutsche Version: siehe `README.de.md` für eine vollständige Zusammenfassung auf Deutsch.
+- German version: see `README.de.md` for a full summary in German.
 
 ## Contributing
 - Contributions via pull requests are welcome (see `CONTRIBUTING.md`). Please respect the non-commercial license.
 - Experimental hardware/software: see `DISCLAIMER.md` before deploying.
-
-## Contributing
-- Contributions via pull requests are welcome (see `CONTRIBUTING.md`). Please respect the non-commercial license.
-- Experimental hardware/software: see `DISCLAIMER.md` before deploying.
-
-## License
-- Non-commercial open source license (see `LICENSE`). You may view, use, and modify the code and contribute via pull requests.
-- Commercial use (including selling devices or services, or paid products) requires explicit permission.
-- Contributions are welcome; modified versions must keep the same license and attribution.
