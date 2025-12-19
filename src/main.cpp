@@ -341,6 +341,26 @@ void logEvent(const String &msg) {
   logBuffer[idx] = String(millis() / 1000) + "s: " + msg;
 }
 
+void loadPartners() {
+  partners.clear();
+  prefs.begin("grow-sensor", true);
+  String raw = prefs.getString("partners", "[]");
+  prefs.end();
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonObject obj : arr) {
+    Partner p;
+    p.id = obj["id"] | "";
+    p.name = obj["name"] | "";
+    p.description = obj["desc"] | "";
+    p.url = obj["url"] | "";
+    p.logo = obj["logo"] | "";
+    p.enabled = obj["en"] | true;
+    if (p.id.length() > 0) partners.push_back(p);
+  }
+}
+
 void rebuildSensorList() {
   sensors.clear();
   auto addSensor = [&](const String &id, const String &type, const String &cat, bool enabled, SensorHealth &h, bool &flag) {
@@ -453,26 +473,6 @@ void clearPreferences() {
   prefs.clear();
   prefs.end();
   logEvent("Preferences cleared");
-}
-
-void loadPartners() {
-  partners.clear();
-  prefs.begin("grow-sensor", true);
-  String raw = prefs.getString("partners", "[]");
-  prefs.end();
-  DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
-  JsonArray arr = doc.as<JsonArray>();
-  for (JsonObject obj : arr) {
-    Partner p;
-    p.id = obj["id"] | "";
-    p.name = obj["name"] | "";
-    p.description = obj["desc"] | "";
-    p.url = obj["url"] | "";
-    p.logo = obj["logo"] | "";
-    p.enabled = obj["en"] | true;
-    if (p.id.length() > 0) partners.push_back(p);
-  }
 }
 
 void savePartners() {
