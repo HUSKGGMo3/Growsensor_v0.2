@@ -116,6 +116,17 @@ struct SensorSlot {
   bool *enabledFlag = nullptr;
 };
 
+
+struct Partner {
+  String id;
+  String name;
+  String description;
+  String url;
+  String logo;
+  bool enabled = true;
+};
+
+
 struct VpdProfile {
   const char *id;
   const char *label;
@@ -429,6 +440,45 @@ void clearPreferences() {
   logEvent("Preferences cleared");
 }
 
+void loadPartners() {
+  partners.clear();
+  prefs.begin("grow-sensor", true);
+  String raw = prefs.getString("partners", "[]");
+  prefs.end();
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
+  JsonArray arr = doc.as<JsonArray>();
+  for (JsonObject obj : arr) {
+    Partner p;
+    p.id = obj["id"] | "";
+    p.name = obj["name"] | "";
+    p.description = obj["desc"] | "";
+    p.url = obj["url"] | "";
+    p.logo = obj["logo"] | "";
+    p.enabled = obj["en"] | true;
+    if (p.id.length() > 0) partners.push_back(p);
+  }
+}
+
+void savePartners() {
+  DynamicJsonDocument doc(1024);
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto &p : partners) {
+    JsonObject obj = arr.createNestedObject();
+    obj["id"] = p.id;
+    obj["name"] = p.name;
+    obj["desc"] = p.description;
+    obj["url"] = p.url;
+    obj["logo"] = p.logo;
+    obj["en"] = p.enabled;
+  }
+  String out;
+  serializeJson(arr, out);
+  prefs.begin("grow-sensor", false);
+  prefs.putString("partners", out);
+  prefs.end();
+}
+
 // ----------------------------
 // Sensor handling
 // ----------------------------
@@ -670,7 +720,7 @@ String htmlPage() {
     </style>
   </head>
   <body>
-    <header><h1>GrowSensor – v0.1</h1></header>
+    <header><h1>GrowSensor – v0.2</h1></header>
     <main>
       <section class="grid">
         <article class="card"><div>Licht (Lux)</div><div class="value" id="lux">–</div></article>
@@ -787,8 +837,22 @@ String htmlPage() {
         <button id="downloadLogs">Download</button>
         <pre class="logbox" id="logBox"></pre>
       </section>
+
+      <section class="card">
+        <h3 style="margin-top:0">Partner & Supporter</h3>
+        <div id="partnerList"></div>
+        <div class="row" style="margin-top:12px;">
+          <input id="partnerId" placeholder="ID" />
+          <input id="partnerName" placeholder="Name" />
+        </div>
+        <input id="partnerDesc" placeholder="Beschreibung" />
+        <input id="partnerUrl" placeholder="URL (optional)" />
+        <input id="partnerLogo" placeholder="Logo (optional)" />
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" id="partnerEnabled" checked style="width:auto;" /> Aktiv</label>
+        <button id="savePartner">Partner speichern</button>
+      </section>
     </main>
-    <footer>Growcontroller v0.1 • Sensorgehäuse v0.3</footer>
+    <footer>Growcontroller v0.2 • Sensorgehäuse v0.3</footer>
 
     <div id="loginModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:50;">
       <div class="card" style="max-width:420px;width:90%;">
@@ -1129,6 +1193,33 @@ String htmlPage() {
         await loadSensors();
       });
 
+      async function loadPartners() {
+        const res = await authedFetch('/api/partners');
+        const data = await res.json();
+        const list = document.getElementById('partnerList');
+        list.innerHTML = '';
+        data.partners.forEach(p => {
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.style.marginTop = '8px';
+          card.innerHTML = `<strong>${p.name}</strong><br/><span style=\"color:#9ca3af;\">${p.description}</span>` + (p.url ? `<br/><a href=\"${p.url}\" target=\"_blank\">Link</a>` : '');
+          list.appendChild(card);
+        });
+      }
+
+      document.getElementById('savePartner').addEventListener('click', async () => {
+        const body = new URLSearchParams();
+        body.set('id', document.getElementById('partnerId').value);
+        body.set('name', document.getElementById('partnerName').value);
+        body.set('description', document.getElementById('partnerDesc').value);
+        body.set('url', document.getElementById('partnerUrl').value);
+        body.set('logo', document.getElementById('partnerLogo').value);
+        body.set('enabled', document.getElementById('partnerEnabled').checked ? '1' : '0');
+        await authedFetch('/api/partners', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
+        await loadPartners();
+      });
+=======
+
       setInterval(fetchData, 2500);
       if (!authToken) {
         showLogin();
@@ -1136,6 +1227,7 @@ String htmlPage() {
         loadSettings();
         scanNetworks();
         loadLogs();
+        loadPartners();
         fetchData();
       }
     </script>
@@ -1215,6 +1307,57 @@ void handleAuthChange() {
   prefs.putBool("must_change", mustChangePassword);
   prefs.end();
   String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
+  server.send(200, "application/json", json);
+}
+
+void handlePartners() {
+  if (!enforceAuth())
+    return;
+  if (server.method() == HTTP_POST) {
+    if (!server.hasArg("id")) {
+      server.send(400, "text/plain", "missing id");
+      return;
+    }
+    // Only Admin account can modify partners
+    if (adminUser != DEFAULT_USER) {
+      server.send(403, "text/plain", "forbidden");
+      return;
+    }
+    String id = server.arg("id");
+    Partner *existing = nullptr;
+    for (auto &p : partners) {
+      if (p.id == id) {
+        existing = &p;
+        break;
+      }
+    }
+    Partner p = existing ? *existing : Partner();
+    p.id = id;
+    if (server.hasArg("name")) p.name = server.arg("name");
+    if (server.hasArg("description")) p.description = server.arg("description");
+    if (server.hasArg("url")) p.url = server.arg("url");
+    if (server.hasArg("logo")) p.logo = server.arg("logo");
+    if (server.hasArg("enabled")) p.enabled = server.arg("enabled") == "1";
+    if (existing) {
+      *existing = p;
+    } else {
+      partners.push_back(p);
+    }
+    savePartners();
+    server.send(200, "text/plain", "saved");
+    return;
+  }
+
+  String json = "{\"partners\":[";
+  size_t count = 0;
+  for (size_t i = 0; i < partners.size(); i++) {
+    const auto &p = partners[i];
+    if (!p.enabled)
+      continue;
+    if (count++ > 0) json += ",";
+    json += "{\"id\":\"" + p.id + "\",\"name\":\"" + p.name + "\",\"description\":\"" + p.description + "\",\"url\":\"" + p.url + "\",\"logo\":\"" + p.logo + "\"}";
+  }
+  json += "]}";
   server.send(200, "application/json", json);
 }
 
@@ -1350,6 +1493,10 @@ void handleSensorsApi() {
     if (!server.hasArg("id")) {
       server.send(400, "text/plain", "missing id");
       return;
+    }
+    // Only Admin user can modify partners
+    if (adminUser != DEFAULT_USER || adminPass.isEmpty()) {
+      // still allow default Admin user (but require auth already)
     }
     String id = server.arg("id");
     if (id == "replace") {
@@ -1500,6 +1647,8 @@ void setupServer() {
   server.on("/api/sensors", HTTP_GET, handleSensorsApi);
   server.on("/api/sensors", HTTP_POST, handleSensorsApi);
   server.on("/api/logs", HTTP_GET, handleLogs);
+   server.on("/api/partners", HTTP_GET, handlePartners);
+   server.on("/api/partners", HTTP_POST, handlePartners);
   server.onNotFound(handleNotFound);
   server.begin();
 }
