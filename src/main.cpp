@@ -721,12 +721,26 @@ String htmlPage() {
       .hover-chart { position:absolute; inset:8px; padding:8px; background:rgba(15,23,42,0.96); border:1px solid #1f2937; border-radius:10px; display:none; align-items:center; justify-content:center; }
       .metric:hover .hover-chart { display:flex; }
       .hover-chart canvas { width:100%; height:140px; }
-      .vpd-bar { position: relative; height: 14px; border-radius: 999px; background: #0b1220; margin-top: 12px; overflow: hidden; }
-      .vpd-range { position:absolute; top:0; bottom:0; background: linear-gradient(90deg, #22c55e, #a855f7); opacity:0.25; }
-      .vpd-marker { position:absolute; top:-3px; bottom:-3px; width:4px; background:#f59e0b; border-radius:2px; display:none; }
       .dev-note { color:#f59e0b; font-size:0.9rem; margin-top:6px; }
       #devModal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); z-index:60; }
       .hover-hint { font-size:0.85rem; color:#94a3b8; margin-top:6px; }
+      nav { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+      nav button { width:auto; padding:8px 12px; }
+      .view { display:none; flex-direction:column; gap:12px; }
+      .view.active { display:flex; }
+      .menu-btn { background:#1f2937; color:#e2e8f0; border:1px solid #1f2937; }
+      .wifi-status { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+      .pulse { animation:pulse 1.8s ease-in-out infinite; }
+      @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(52,211,153,0.45); } 70% { box-shadow:0 0 0 10px rgba(52,211,153,0); } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0); } }
+      .hidden { display:none; }
+      .vpd-chart { position:relative; height:180px; border-radius:12px; overflow:hidden; background: linear-gradient(180deg, #7f1d1d 0%, #f97316 20%, #22c55e 55%, #0ea5e9 80%, #1d4ed8 100%); }
+      .vpd-chart::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg, rgba(15,23,42,0.55), rgba(15,23,42,0.1)); pointer-events:none; }
+      .vpd-target { position:absolute; left:0; top:0; bottom:0; background:rgba(34,197,94,0.25); border:1px dashed rgba(34,197,94,0.8); display:none; }
+      .vpd-marker-dot { position:absolute; width:8px; height:8px; border-radius:50%; background:#fbbf24; box-shadow:0 0 0 4px rgba(251,191,36,0.35); display:none; top:50%; transform:translate(-50%, -50%); }
+      .vpd-label { position:absolute; top:8px; right:8px; background:rgba(15,23,42,0.7); padding:4px 8px; border-radius:8px; font-size:0.9rem; }
+      .sensor-card { border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; background:#0b1220; }
+      .sensor-card .row { align-items:flex-start; }
+      .sensor-desc { color:#94a3b8; font-size:0.9rem; }
     </style>
   </head>
   <body>
@@ -746,9 +760,14 @@ String htmlPage() {
           <span id="devStatus" class="badge badge-dev" style="display:none;">Dev aktiv</span>
         </div>
       </div>
+      <nav>
+        <button id="navDashboard" class="menu-btn">Dashboard</button>
+        <button id="navSensors" class="menu-btn">Sensoren</button>
+      </nav>
     </header>
     <main>
-      <section class="grid metrics">
+      <div id="view-dashboard" class="view active">
+        <section class="grid metrics">
         <article class="card metric" data-metric="lux">
           <div class="card-header"><div>Licht (Lux)</div><span class="status-dot" id="luxDot"></span></div>
           <div class="value" id="lux">–</div>
@@ -783,15 +802,16 @@ String htmlPage() {
           <div class="card-header"><div>VPD (kPa)</div><span class="status-dot" id="vpdDot"></span></div>
           <div class="value" id="vpd">–</div>
           <div id="vpdStatus" style="font-size:0.85rem;margin-top:6px;"></div>
-          <div class="vpd-bar">
-            <div class="vpd-range" id="vpdRange"></div>
-            <div class="vpd-marker" id="vpdMarker"></div>
+          <div class="vpd-chart" id="vpdChartBg">
+            <div class="vpd-target" id="vpdTargetZone"></div>
+            <div class="vpd-marker-dot" id="vpdMarkerDot"></div>
+            <div class="vpd-label">0.0 – 2.0 kPa</div>
           </div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="vpd" width="320" height="140"></canvas></div>
         </article>
       </section>
 
-      <section class="card" id="avgCard">
+        <section class="card" id="avgCard">
         <h3 style="margin-top:0">Gestern Ø (24h)</h3>
         <div class="grid">
           <div><strong>Lux:</strong> <span id="avgLux">–</span></div>
@@ -802,12 +822,12 @@ String htmlPage() {
         </div>
       </section>
 
-      <section class="card">
+        <section class="card">
         <h3 style="margin-top:0">Live Verlauf</h3>
         <div class="chart"><canvas id="chart"></canvas></div>
       </section>
 
-      <section class="grid">
+        <section class="grid">
         <article class="card">
           <h3 style="margin-top:0">Spektrum wählen</h3>
           <label for="channel">LED Kanal</label>
@@ -830,6 +850,19 @@ String htmlPage() {
 
         <article class="card" id="wifiCard">
           <h3 style="margin-top:0">Wi-Fi Setup</h3>
+          <div id="wifiConnectedBlock" class="hidden">
+            <div class="wifi-status">
+              <span class="led pulse" style="background:#34d399;" id="wifiPulse"></span>
+              <strong>Verbunden</strong>
+            </div>
+            <div class="row" style="margin-top:4px;">
+              <div><strong>IP:</strong> <span id="wifiIp">–</span></div>
+              <div><strong>Gateway:</strong> <span id="wifiGw">–</span></div>
+              <div><strong>Subnet:</strong> <span id="wifiSn">–</span></div>
+            </div>
+            <button id="toggleWifiForm" class="ghost" style="width:auto; margin-top:8px;">Wi-Fi ändern</button>
+          </div>
+          <div id="wifiForm">
           <div class="row">
             <div style="flex:2">
               <label for="ssid">SSID</label>
@@ -853,12 +886,17 @@ String htmlPage() {
           <button id="resetWifi" class="dev-only" style="margin-top:8px;background:#ef4444;color:#fff;">WLAN Reset</button>
           <p id="wifiStatus" class="status" style="margin-top:8px;"></p>
           <p class="dev-note" id="wifiDevNote">Wi-Fi Änderungen nur im Dev-Modus.</p>
+          </div>
         </article>
+      </section>
+      </div>
 
-        <article class="card">
-          <h3 style="margin-top:0">Sensoren</h3>
+      <div id="view-sensors" class="view">
+        <section class="card">
+          <h3 style="margin-top:0">Sensoren verwalten</h3>
+          <p class="sensor-desc">Checkbox = Sensor aktivieren/deaktivieren. Status zeigt aktiv / keine Daten / disabled.</p>
           <div id="sensorList"></div>
-          <div class="row" style="margin-top:8px;">
+          <div class="row" style="margin-top:12px;">
             <select id="replaceFrom"></select>
             <input id="replaceTo" placeholder="Neuer Sensor ID" />
           </div>
@@ -871,6 +909,10 @@ String htmlPage() {
               <option value="co2">CO₂</option>
             </select>
             <button id="replaceBtn">Sensor ersetzen</button>
+          </div>
+          <div style="margin-top:12px;">
+            <h4 style="margin:8px 0 4px;">Sensor ersetzen – Erklärung</h4>
+            <p class="sensor-desc">Wähle bestehenden Sensor (From), gib neue ID/Typ/Kategorie (To) an, um ihn zu tauschen.</p>
           </div>
           <label for="climateType" style="margin-top:12px; display:block;">Klimasensor</label>
           <select id="climateType">
@@ -889,8 +931,8 @@ String htmlPage() {
             <option value="scd41">Sensirion SCD41</option>
           </select>
           <button id="saveTypes" style="margin-top:8px;">Sensortypen speichern</button>
-        </article>
-      </section>
+        </section>
+      </div>
 
       <section class="card">
         <h3 style="margin-top:0">Logs (letzte 6h)</h3>
@@ -1087,16 +1129,17 @@ String htmlPage() {
       }
 
       function updateVpdBar(low, high, value) {
-        const range = document.getElementById('vpdRange');
-        const marker = document.getElementById('vpdMarker');
+        const target = document.getElementById('vpdTargetZone');
+        const marker = document.getElementById('vpdMarkerDot');
         const min = 0.0, max = 2.0;
         const clamp = (v) => Math.min(max, Math.max(min, v ?? min));
         const l = clamp(low ?? 0);
         const h = clamp(high ?? 0);
-        const startPct = ((l - min) / (max - min)) * 100;
-        const widthPct = Math.max(((h - l) / (max - min)) * 100, 0);
-        range.style.left = `${startPct}%`;
-        range.style.width = `${widthPct}%`;
+        const left = ((l - min) / (max - min)) * 100;
+        const right = ((h - min) / (max - min)) * 100;
+        target.style.left = `${left}%`;
+        target.style.width = `${Math.max(right - left, 0)}%`;
+        target.style.display = 'block';
         if (typeof value === 'number' && !Number.isNaN(value)) {
           const v = clamp(value);
           marker.style.left = `${((v - min) / (max - min)) * 100}%`;
@@ -1139,6 +1182,7 @@ String htmlPage() {
           setDot('vpdDot', flag(data.vpd_ok), flag(data.climate_present) && flag(data.leaf_present), flag(data.climate_enabled) || flag(data.leaf_enabled));
           pushHistory(data);
           pushHoverHistory(data);
+          applyWifiState(data);
         } catch (err) {
           console.warn('telemetry failed', err);
           updateConnectionStatus(false, false);
@@ -1156,6 +1200,8 @@ String htmlPage() {
         document.getElementById('gw').value = data.gw || '';
         document.getElementById('sn').value = data.sn || '';
         document.getElementById('staticIpToggle').checked = data.static || false;
+        updateStaticIpVisibility();
+        applyWifiState({ wifi_connected: data.connected ? 1 : 0, ap_mode: data.ap_mode ? 1 : 0, ip: data.ip, gw: data.gw, sn: data.sn });
         await loadSensors();
       }
 
@@ -1168,24 +1214,32 @@ String htmlPage() {
         replaceFrom.innerHTML = '';
         data.sensors.forEach(sensor => {
           const row = document.createElement('div');
-          row.className = 'row';
-          const label = document.createElement('label');
+          row.className = 'sensor-card';
+          const top = document.createElement('div');
+          top.className = 'row';
+          const label = document.createElement('div');
           label.style.flex = '2';
-          label.textContent = `${sensor.name} (${sensor.id})`;
+          label.innerHTML = `<strong>${sensor.name}</strong> <span style="color:#94a3b8;">(${sensor.category})</span>`;
           const toggle = document.createElement('input');
           toggle.type = 'checkbox';
           toggle.checked = sensor.enabled;
           toggle.style.flex = '0.2';
           toggle.addEventListener('change', async () => {
             await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=${sensor.id}&enabled=${toggle.checked ? 1 : 0}`});
+            await loadSensors();
           });
           const status = document.createElement('span');
           status.className = 'status ' + (sensor.enabled ? (sensor.healthy ? 'ok' : 'err') : 'err');
           status.style.flex = '1';
           status.textContent = sensor.enabled ? (sensor.healthy ? 'aktiv' : 'keine Daten') : 'disabled';
-          row.appendChild(label);
-          row.appendChild(toggle);
-          row.appendChild(status);
+          top.appendChild(label);
+          top.appendChild(toggle);
+          top.appendChild(status);
+          row.appendChild(top);
+          const desc = document.createElement('div');
+          desc.className = 'sensor-desc';
+          desc.textContent = sensor.enabled ? 'Häkchen = Sensor aktivieren/deaktivieren' : 'Aktiviere, um Messwerte zu erhalten';
+          row.appendChild(desc);
           container.appendChild(row);
           const opt = document.createElement('option');
           opt.value = sensor.id;
@@ -1214,6 +1268,14 @@ String htmlPage() {
           ssidSelect.appendChild(opt);
         }
         document.getElementById('wifiStatus').textContent = 'Suche abgeschlossen';
+      }
+
+      function updateStaticIpVisibility() {
+        const checked = document.getElementById('staticIpToggle').checked;
+        ['ip','gw','sn'].forEach(id => {
+          const el = document.getElementById(id);
+          el.parentElement.style.display = checked ? 'flex' : 'none';
+        });
       }
 
       document.getElementById('saveChannel').addEventListener('click', async () => {
@@ -1249,6 +1311,8 @@ String htmlPage() {
         await authedFetch('/api/reset', { method: 'POST' });
         setTimeout(() => location.reload(), 1500);
       });
+
+      document.getElementById('staticIpToggle').addEventListener('change', updateStaticIpVisibility);
 
       async function loadLogs() {
         const res = await authedFetch('/api/logs');
@@ -1318,6 +1382,35 @@ String htmlPage() {
       document.querySelectorAll('.metric').forEach(card => {
         const metric = card.dataset.metric;
         card.addEventListener('mouseenter', () => drawHover(metric));
+      });
+
+      function switchView(target) {
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        document.getElementById(target).classList.add('active');
+      }
+      document.getElementById('navDashboard').addEventListener('click', () => switchView('view-dashboard'));
+      document.getElementById('navSensors').addEventListener('click', () => switchView('view-sensors'));
+
+      function applyWifiState(data) {
+        const connected = flag(data.wifi_connected);
+        const ap = flag(data.ap_mode);
+        const form = document.getElementById('wifiForm');
+        const block = document.getElementById('wifiConnectedBlock');
+        if (connected && !ap) {
+          block.classList.remove('hidden');
+          form.classList.add('hidden');
+          document.getElementById('wifiIp').textContent = data.ip || '–';
+          document.getElementById('wifiGw').textContent = data.gw || '–';
+          document.getElementById('wifiSn').textContent = data.sn || '–';
+        } else {
+          block.classList.add('hidden');
+          form.classList.remove('hidden');
+        }
+      }
+
+      document.getElementById('toggleWifiForm').addEventListener('click', () => {
+        const form = document.getElementById('wifiForm');
+        form.classList.toggle('hidden');
       });
 
       function setDevVisible() {
@@ -1422,26 +1515,33 @@ void handlePartners() {
 
 void handleTelemetry() {
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
-  bool luxOk = enableLight && lightHealth.present && !isnan(latest.lux) && latest.lux > 0;
-  bool climateOk = enableClimate && climateHealth.present && !isnan(latest.ambientTempC) && !isnan(latest.humidity);
-  bool leafOk = enableLeaf && leafHealth.present && !isnan(latest.leafTempC);
-  bool co2Ok = enableCo2 && co2Health.present && latest.co2ppm > 0;
+  bool luxOk = enableLight && lightHealth.present && lightHealth.healthy && !isnan(latest.lux);
+  bool climateOk = enableClimate && climateHealth.present && climateHealth.healthy && !isnan(latest.ambientTempC) && !isnan(latest.humidity);
+  bool leafOk = enableLeaf && leafHealth.present && leafHealth.healthy && !isnan(latest.leafTempC);
+  bool co2Ok = enableCo2 && co2Health.present && co2Health.healthy && latest.co2ppm > 0 && latest.co2ppm < 5000;
   bool vpdOk = !isnan(latest.vpd);
-  char json[640];
+  unsigned long now = millis();
+  auto ageMs = [&](unsigned long t) -> unsigned long { return t == 0 ? 0UL : (now - t); };
+  String ipStr = WiFi.localIP().toString();
+  String gwStr = WiFi.gatewayIP().toString();
+  String snStr = WiFi.subnetMask().toString();
+  char json[768];
   snprintf(json, sizeof(json),
            "{\"lux\":%.1f,\"ppfd\":%.1f,\"ppfd_factor\":%.4f,\"co2\":%d,\"temp\":%.1f,\"humidity\":%.1f,\"leaf\":%.1f,"
            "\"vpd\":%.3f,\"vpd_low\":%.2f,\"vpd_high\":%.2f,\"vpd_status\":%d,"
-           "\"wifi_connected\":%d,\"ap_mode\":%d,"
+           "\"wifi_connected\":%d,\"ap_mode\":%d,\"ip\":\"%s\",\"gw\":\"%s\",\"sn\":\"%s\","
            "\"lux_ok\":%d,\"co2_ok\":%d,\"climate_ok\":%d,\"leaf_ok\":%d,\"vpd_ok\":%d,"
            "\"lux_present\":%d,\"co2_present\":%d,\"climate_present\":%d,\"leaf_present\":%d,"
-           "\"lux_enabled\":%d,\"co2_enabled\":%d,\"climate_enabled\":%d,\"leaf_enabled\":%d}",
+           "\"lux_enabled\":%d,\"co2_enabled\":%d,\"climate_enabled\":%d,\"leaf_enabled\":%d,"
+           "\"lux_age_ms\":%lu,\"co2_age_ms\":%lu,\"climate_age_ms\":%lu,\"leaf_age_ms\":%lu}",
            safeFloat(latest.lux), safeFloat(latest.ppfd), safeFloat(latest.ppfdFactor), safeInt(latest.co2ppm, -1), safeFloat(latest.ambientTempC),
            safeFloat(latest.humidity), safeFloat(latest.leafTempC), safeFloat(latest.vpd), safeFloat(latest.vpdTargetLow),
            safeFloat(latest.vpdTargetHigh), latest.vpdStatus,
-           wifiConnected ? 1 : 0, apMode ? 1 : 0,
+           wifiConnected ? 1 : 0, apMode ? 1 : 0, ipStr.c_str(), gwStr.c_str(), snStr.c_str(),
            luxOk ? 1 : 0, co2Ok ? 1 : 0, climateOk ? 1 : 0, leafOk ? 1 : 0, vpdOk ? 1 : 0,
            lightHealth.present ? 1 : 0, co2Health.present ? 1 : 0, climateHealth.present ? 1 : 0, leafHealth.present ? 1 : 0,
-           enableLight ? 1 : 0, enableCo2 ? 1 : 0, enableClimate ? 1 : 0, enableLeaf ? 1 : 0);
+           enableLight ? 1 : 0, enableCo2 ? 1 : 0, enableClimate ? 1 : 0, enableLeaf ? 1 : 0,
+           ageMs(lightHealth.lastUpdate), ageMs(co2Health.lastUpdate), ageMs(climateHealth.lastUpdate), ageMs(leafHealth.lastUpdate));
   server.send(200, "application/json", json);
 }
 
@@ -1454,6 +1554,7 @@ void handleSettings() {
     json += "\"vpd_stage\":\"" + vpdStageId + "\",";
     json += "\"wifi\":\"" + String(apMode ? "Access Point aktiv" : "Verbunden: " + WiFi.SSID()) + "\",";
     json += "\"connected\":" + String(WiFi.status() == WL_CONNECTED ? 1 : 0) + ",";
+    json += "\"ap_mode\":" + String(apMode ? 1 : 0) + ",";
     json += "\"ssid\":\"" + savedSsid + "\",";
     json += "\"static\":" + String(staticIpEnabled ? 1 : 0) + ",";
     json += "\"ip\":\"" + (staticIpEnabled ? staticIp.toString() : WiFi.localIP().toString()) + "\",";
