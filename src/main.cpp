@@ -34,14 +34,10 @@ static constexpr unsigned long WIFI_TIMEOUT = 15000;
 static constexpr unsigned long SENSOR_INTERVAL = 2000;
 static constexpr unsigned long HISTORY_PUSH_INTERVAL = 300000; // 5 minutes for 24h window (288 points)
 static constexpr unsigned long LEAF_STALE_MS = 300000;         // 5 minutes stale threshold
-static constexpr float LEAF_DIFF_THRESHOLD = 5.0f;              // °C difference to mark IR sensor unhealthy
-static constexpr size_t LOG_CAPACITY = 720;                     // ~6h if we log every 30s
+static constexpr float LEAF_DIFF_THRESHOLD = 5.0f;             // °C difference to mark IR sensor unhealthy
+static constexpr size_t LOG_CAPACITY = 720;                    // ~6h if we log every 30s
 static constexpr unsigned long STALL_LIMIT_MS = 4UL * 60UL * 60UL * 1000UL; // 4h stall watchdog
 
-// Auth
-static const char *DEFAULT_USER = "Admin";
-static const char *DEFAULT_PASS = "admin";
-static const char *SUPPORT_MASTER_PASS = "";
 // Lux to PPFD conversion factors (approximate for common horticulture spectra)
 enum class LightChannel {
   FullSpectrum,
@@ -67,14 +63,13 @@ enum class Co2SensorType {
 };
 
 float luxToPPFD(float lux, LightChannel channel) {
-  // Factors derived from typical LED spectral profiles; adjust in UI if needed.
   switch (channel) {
   case LightChannel::FullSpectrum:
-    return lux * 0.014f; // full-spectrum horticulture LEDs
+    return lux * 0.014f;
   case LightChannel::White:
-    return lux * 0.0157f; // cool/neutral white channels
+    return lux * 0.0157f;
   case LightChannel::Bloom:
-    return lux * 0.0175f; // red-heavy bloom channels
+    return lux * 0.0175f;
   default:
     return lux * 0.015f;
   }
@@ -129,9 +124,9 @@ struct Partner {
 struct VpdProfile {
   const char *id;
   const char *label;
-  float factor;      // scaling factor for VPD (stage-specific tolerance)
-  float targetLow;   // recommended lower bound (kPa)
-  float targetHigh;  // recommended upper bound (kPa)
+  float factor;
+  float targetLow;
+  float targetHigh;
 };
 
 // Globals
@@ -148,9 +143,11 @@ WebServer server(80);
 String savedSsid;
 String savedWifiPass;
 bool apMode = false;
+
 LightChannel channel = LightChannel::FullSpectrum;
 ClimateSensorType climateType = ClimateSensorType::SHT31;
 Co2SensorType co2Type = Co2SensorType::MHZ19;
+
 Telemetry latest;
 unsigned long lastSensorMillis = 0;
 unsigned long lastHistoryPush = 0;
@@ -165,10 +162,9 @@ SensorHealth lightHealth;
 SensorHealth climateHealth;
 SensorHealth leafHealth;
 SensorHealth co2Health;
+
 std::vector<SensorSlot> sensors;
 std::vector<Partner> partners;
-
-void loadPartners();
 
 // Logging buffer
 String logBuffer[LOG_CAPACITY];
@@ -180,12 +176,6 @@ bool enableLight = true;
 bool enableClimate = true;
 bool enableLeaf = true;
 bool enableCo2 = true;
-
-// Auth/session
-String adminUser = DEFAULT_USER;
-String adminPass = DEFAULT_PASS;
-bool mustChangePassword = false;
-String sessionToken;
 
 // VPD stage
 String vpdStageId = "seedling";
@@ -221,29 +211,20 @@ String lightChannelName() {
 }
 
 LightChannel lightChannelFromString(const String &value) {
-  if (value == "white")
-    return LightChannel::White;
-  if (value == "bloom")
-    return LightChannel::Bloom;
+  if (value == "white") return LightChannel::White;
+  if (value == "bloom") return LightChannel::Bloom;
   return LightChannel::FullSpectrum;
 }
 
 String climateSensorName(ClimateSensorType t) {
   switch (t) {
-  case ClimateSensorType::SHT31:
-    return "sht31";
-  case ClimateSensorType::DHT22:
-    return "dht22";
-  case ClimateSensorType::BME280:
-    return "bme280";
-  case ClimateSensorType::BME680:
-    return "bme680";
-  case ClimateSensorType::SHT30:
-    return "sht30";
-  case ClimateSensorType::DS18B20:
-    return "ds18b20";
-  default:
-    return "sht31";
+  case ClimateSensorType::SHT31: return "sht31";
+  case ClimateSensorType::DHT22: return "dht22";
+  case ClimateSensorType::BME280: return "bme280";
+  case ClimateSensorType::BME680: return "bme680";
+  case ClimateSensorType::SHT30: return "sht30";
+  case ClimateSensorType::DS18B20: return "ds18b20";
+  default: return "sht31";
   }
 }
 
@@ -258,18 +239,12 @@ ClimateSensorType climateFromString(const String &v) {
 
 String co2SensorName(Co2SensorType t) {
   switch (t) {
-  case Co2SensorType::MHZ19:
-    return "mhz19";
-  case Co2SensorType::SENSEAIR_S8:
-    return "senseair_s8";
-  case Co2SensorType::SCD30:
-    return "scd30";
-  case Co2SensorType::SCD40:
-    return "scd40";
-  case Co2SensorType::SCD41:
-    return "scd41";
-  default:
-    return "mhz19";
+  case Co2SensorType::MHZ19: return "mhz19";
+  case Co2SensorType::SENSEAIR_S8: return "senseair_s8";
+  case Co2SensorType::SCD30: return "scd30";
+  case Co2SensorType::SCD40: return "scd40";
+  case Co2SensorType::SCD41: return "scd41";
+  default: return "mhz19";
   }
 }
 
@@ -283,30 +258,17 @@ Co2SensorType co2FromString(const String &v) {
 
 const VpdProfile &vpdProfileById(const String &id) {
   for (const auto &p : VPD_PROFILES) {
-    if (id == p.id)
-      return p;
+    if (id == p.id) return p;
   }
   return VPD_PROFILES[0];
-}
-
-bool hasToken() { return sessionToken.length() > 0; }
-
-String generateToken() {
-  uint32_t r = esp_random();
-  char buf[17];
-  snprintf(buf, sizeof(buf), "%08lx%08lx", millis(), (unsigned long)r);
-  return String(buf);
 }
 
 float safeFloat(float v, float fallback = 0.0f) { return isnan(v) ? fallback : v; }
 int safeInt(int v, int fallback = 0) { return v < 0 ? fallback : v; }
 
-float currentPpfdFactor() {
-  return luxToPPFD(1.0f, channel);
-}
+float currentPpfdFactor() { return luxToPPFD(1.0f, channel); }
 
-bool isAuthorized() { return true; }
-
+// Auth ist deaktiviert -> immer erlaubt
 bool enforceAuth() { return true; }
 
 void persistSensorFlags() {
@@ -329,19 +291,23 @@ void logEvent(const String &msg) {
   logBuffer[idx] = String(millis() / 1000) + "s: " + msg;
 }
 
+// ----------------------------
+// Partners
+// ----------------------------
 void loadPartners() {
   partners.clear();
   prefs.begin("grow-sensor", true);
   String raw = prefs.getString("partners", "[]");
   prefs.end();
-  DynamicJsonDocument doc(1024);
+
+  DynamicJsonDocument doc(2048);
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
   JsonArray arr = doc.as<JsonArray>();
   for (JsonObject obj : arr) {
     Partner p;
     p.id = obj["id"] | "";
     p.name = obj["name"] | "";
-    p.description = obj["desc"] | "";
+    p.description = obj["desc"] | (obj["description"] | "");
     p.url = obj["url"] | "";
     p.logo = obj["logo"] | "";
     p.enabled = obj["en"] | true;
@@ -349,8 +315,32 @@ void loadPartners() {
   }
 }
 
+void savePartners() {
+  DynamicJsonDocument doc(2048);
+  JsonArray arr = doc.to<JsonArray>();
+  for (const auto &p : partners) {
+    JsonObject obj = arr.createNestedObject();
+    obj["id"] = p.id;
+    obj["name"] = p.name;
+    obj["desc"] = p.description;
+    obj["url"] = p.url;
+    obj["logo"] = p.logo;
+    obj["en"] = p.enabled;
+  }
+  String out;
+  serializeJson(arr, out);
+
+  prefs.begin("grow-sensor", false);
+  prefs.putString("partners", out);
+  prefs.end();
+}
+
+// ----------------------------
+// Sensor list
+// ----------------------------
 void rebuildSensorList() {
   sensors.clear();
+
   auto addSensor = [&](const String &id, const String &type, const String &cat, bool enabled, SensorHealth &h, bool &flag) {
     SensorSlot s;
     s.id = id;
@@ -384,7 +374,7 @@ void startAccessPoint() {
   apMode = true;
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
-  delay(100); // give the AP time to start
+  delay(100);
 
   IPAddress apIP = WiFi.softAPIP();
   dnsServer.start(DNS_PORT, "*", apIP);
@@ -394,46 +384,44 @@ void startAccessPoint() {
 
 bool connectToWiFi() {
   prefs.begin("grow-sensor", false);
+
   savedSsid = prefs.getString("ssid", "");
   savedWifiPass = prefs.getString("wifi_pass", "");
+
+  // Legacy migration: früher wurde "pass" für WLAN benutzt
   bool hasWifiPassKey = prefs.isKey("wifi_pass");
   bool hasLegacyPassKey = prefs.isKey("pass");
-  bool hasAdminPassKey = prefs.isKey("admin_pass");
-  bool hasAdminUserKey = prefs.isKey("admin_user");
   String legacyPass = hasLegacyPassKey ? prefs.getString("pass", "") : "";
-  String legacyUser = prefs.getString("user", DEFAULT_USER);
+
   channel = lightChannelFromString(prefs.getString("channel", "full_spectrum"));
   climateType = climateFromString(prefs.getString("climate_type", "sht31"));
   co2Type = co2FromString(prefs.getString("co2_type", "mhz19"));
+  vpdStageId = prefs.getString("vpd_stage", "seedling");
+
   staticIpEnabled = prefs.getBool("static", false);
   staticIp.fromString(prefs.getString("ip", ""));
   staticGateway.fromString(prefs.getString("gw", ""));
   staticSubnet.fromString(prefs.getString("sn", ""));
+
   enableLight = prefs.getBool("en_light", true);
   enableClimate = prefs.getBool("en_climate", true);
   enableLeaf = prefs.getBool("en_leaf", true);
   enableCo2 = prefs.getBool("en_co2", true);
-  adminUser = hasAdminUserKey ? prefs.getString("admin_user", DEFAULT_USER) : legacyUser;
-  adminPass = prefs.getString("admin_pass", DEFAULT_PASS);
-  mustChangePassword = prefs.getBool("must_change", false);
-  vpdStageId = prefs.getString("vpd_stage", "seedling");
-  if (mustChangePassword) {
-    mustChangePassword = false;
-    prefs.putBool("must_change", false);
-  }
-  bool migrateLegacyWifiPass = !hasWifiPassKey && hasLegacyPassKey && savedWifiPass.isEmpty() && !legacyPass.isEmpty() && !savedSsid.isEmpty();
+
+  bool migrateLegacyWifiPass =
+      !hasWifiPassKey &&
+      hasLegacyPassKey &&
+      savedWifiPass.isEmpty() &&
+      !legacyPass.isEmpty() &&
+      !savedSsid.isEmpty();
+
   if (migrateLegacyWifiPass) {
     savedWifiPass = legacyPass;
     prefs.putString("wifi_pass", savedWifiPass);
   }
-  if (!hasAdminUserKey && legacyUser.length() > 0) {
-    prefs.putString("admin_user", adminUser);
-  }
-  if (!hasAdminPassKey && hasLegacyPassKey && !legacyPass.isEmpty() && !migrateLegacyWifiPass && !mustChangePassword) {
-    adminPass = legacyPass;
-    prefs.putString("admin_pass", adminPass);
-  }
+
   prefs.end();
+
   loadPartners();
   rebuildSensorList();
 
@@ -444,9 +432,14 @@ bool connectToWiFi() {
   }
 
   WiFi.mode(WIFI_STA);
-  if (staticIpEnabled && staticIp != IPAddress((uint32_t)0) && staticGateway != IPAddress((uint32_t)0) && staticSubnet != IPAddress((uint32_t)0)) {
+
+  if (staticIpEnabled &&
+      staticIp != IPAddress((uint32_t)0) &&
+      staticGateway != IPAddress((uint32_t)0) &&
+      staticSubnet != IPAddress((uint32_t)0)) {
     WiFi.config(staticIp, staticGateway, staticSubnet);
   }
+
   WiFi.begin(savedSsid.c_str(), savedWifiPass.c_str());
   Serial.printf("[WiFi] Connecting to %s ...\n", savedSsid.c_str());
 
@@ -486,25 +479,6 @@ void clearPreferences() {
   logEvent("Preferences cleared");
 }
 
-void savePartners() {
-  DynamicJsonDocument doc(1024);
-  JsonArray arr = doc.to<JsonArray>();
-  for (const auto &p : partners) {
-    JsonObject obj = arr.createNestedObject();
-    obj["id"] = p.id;
-    obj["name"] = p.name;
-    obj["desc"] = p.description;
-    obj["url"] = p.url;
-    obj["logo"] = p.logo;
-    obj["en"] = p.enabled;
-  }
-  String out;
-  serializeJson(arr, out);
-  prefs.begin("grow-sensor", false);
-  prefs.putString("partners", out);
-  prefs.end();
-}
-
 // ----------------------------
 // Sensor handling
 // ----------------------------
@@ -520,7 +494,7 @@ void reinitClimateSensor() {
   if (climateType == ClimateSensorType::SHT31) {
     climateHealth.present = sht31.begin(0x44);
   } else {
-    climateHealth.present = true;
+    climateHealth.present = true; // placeholder
   }
 }
 
@@ -539,7 +513,7 @@ void reinitCo2Sensor() {
     co2Sensor.autoCalibration(false);
     co2Health.present = true;
   } else {
-    co2Health.present = true;
+    co2Health.present = true; // placeholder
   }
 }
 
@@ -548,10 +522,13 @@ void initSensors() {
 
   reinitLightSensor();
   Serial.println(lightHealth.present ? "[Sensor] BH1750 initialized" : "[Sensor] BH1750 not detected");
+
   reinitClimateSensor();
   Serial.println(climateHealth.present ? "[Sensor] Climate initialized" : "[Sensor] Climate not detected");
+
   reinitLeafSensor();
   Serial.println(leafHealth.present ? "[Sensor] MLX90614 initialized" : "[Sensor] MLX90614 not detected");
+
   reinitCo2Sensor();
   Serial.println(co2Health.present ? "[Sensor] CO2 initialized" : "[Sensor] CO2 not detected");
 
@@ -584,12 +561,14 @@ void readSensors() {
 
   latest.ppfdFactor = currentPpfdFactor();
 
-  if (enableLight && lightHealth.present && lightMeter.measurementReady()) {
+  if (enableLight && lightHealth.present) {
     latest.lux = lightMeter.readLightLevel();
     latest.ppfdFactor = currentPpfdFactor();
     latest.ppfd = luxToPPFD(latest.lux, channel);
+
     lightHealth.healthy = !isnan(latest.lux);
     lightHealth.lastUpdate = millis();
+
     if (!isnan(latest.lux)) {
       if (isnan(stallLight.lastValue) || fabsf(stallLight.lastValue - latest.lux) > 0.01f) {
         stallLight.lastValue = latest.lux;
@@ -605,16 +584,17 @@ void readSensors() {
       temp = sht31.readTemperature();
       humidity = sht31.readHumidity();
     } else {
-      // Other climate sensors not implemented yet
       temp = NAN;
       humidity = NAN;
     }
   }
+
   if (!isnan(temp) && !isnan(humidity)) {
     latest.ambientTempC = temp;
     latest.humidity = humidity;
     climateHealth.healthy = true;
     climateHealth.lastUpdate = millis();
+
     if (isnan(stallClimateTemp.lastValue) || fabsf(stallClimateTemp.lastValue - temp) > 0.01f) {
       stallClimateTemp.lastValue = temp;
       stallClimateTemp.lastChange = millis();
@@ -627,11 +607,12 @@ void readSensors() {
     climateHealth.healthy = false;
   }
 
-  double objTemp = enableLeaf && leafHealth.present ? mlx.readObjectTempC() : NAN;
+  double objTemp = (enableLeaf && leafHealth.present) ? mlx.readObjectTempC() : NAN;
   if (!isnan(objTemp)) {
     latest.leafTempC = objTemp;
     leafHealth.healthy = true;
     leafHealth.lastUpdate = millis();
+
     if (isnan(stallLeaf.lastValue) || fabsf(stallLeaf.lastValue - objTemp) > 0.01f) {
       stallLeaf.lastValue = objTemp;
       stallLeaf.lastChange = millis();
@@ -648,29 +629,30 @@ void readSensors() {
         co2Health.healthy = true;
         co2Health.lastUpdate = millis();
         if (stallCo2.lastValue != ppm) {
-          stallCo2.lastValue = ppm;
+          stallCo2.lastValue = (float)ppm;
           stallCo2.lastChange = millis();
         }
       } else {
         co2Health.healthy = false;
       }
     } else {
-      co2Health.healthy = false; // unsupported sensor type
+      co2Health.healthy = false;
     }
   }
 
-  // Compute VPD when data is valid and IR sensor is not drifting excessively
+  // VPD compute
   float leafForVpd = latest.leafTempC;
   if (!leafHealth.healthy && !isnan(latest.ambientTempC)) {
-    // Fallback: approximate leaf temp as ambient -2°C if IR sensor failed
     leafForVpd = latest.ambientTempC - 2.0f;
     latest.leafTempC = leafForVpd;
   }
 
   bool leafFresh = leafHealth.healthy || (!isnan(leafForVpd) && !isnan(latest.ambientTempC));
-  bool leafAligned = !isnan(leafForVpd) && !isnan(latest.ambientTempC) && fabs(leafForVpd - latest.ambientTempC) <= LEAF_DIFF_THRESHOLD;
+  bool leafAligned = !isnan(leafForVpd) && !isnan(latest.ambientTempC) &&
+                     fabs(leafForVpd - latest.ambientTempC) <= LEAF_DIFF_THRESHOLD;
+
   if (leafFresh && leafAligned && !isnan(latest.humidity) && !isnan(latest.ambientTempC)) {
-    float satVP = 0.6108f * expf((17.27f * latest.ambientTempC) / (latest.ambientTempC + 237.3f)); // kPa
+    float satVP = 0.6108f * expf((17.27f * latest.ambientTempC) / (latest.ambientTempC + 237.3f));
     latest.vpd = (1.0f - (latest.humidity / 100.0f)) * satVP;
   } else {
     latest.vpd = NAN;
@@ -682,20 +664,15 @@ void readSensors() {
   }
   latest.vpdTargetLow = profile.targetLow;
   latest.vpdTargetHigh = profile.targetHigh;
-  if (isnan(latest.vpd)) {
-    latest.vpdStatus = 0;
-  } else if (latest.vpd < latest.vpdTargetLow) {
-    latest.vpdStatus = -1;
-  } else if (latest.vpd > latest.vpdTargetHigh) {
-    latest.vpdStatus = 1;
-  } else {
-    latest.vpdStatus = 0;
-  }
+
+  if (isnan(latest.vpd)) latest.vpdStatus = 0;
+  else if (latest.vpd < latest.vpdTargetLow) latest.vpdStatus = -1;
+  else if (latest.vpd > latest.vpdTargetHigh) latest.vpdStatus = 1;
+  else latest.vpdStatus = 0;
 
   unsigned long now = millis();
   auto stallCheck = [&](SensorStall &stall, SensorHealth &health, bool &enabled, const char *name) {
-    if (stall.lastChange == 0)
-      stall.lastChange = now;
+    if (stall.lastChange == 0) stall.lastChange = now;
     if (now - stall.lastChange > STALL_LIMIT_MS && enabled) {
       enabled = false;
       health.healthy = false;
@@ -708,6 +685,7 @@ void readSensors() {
   stallCheck(stallClimateTemp, climateHealth, enableClimate, "Climate");
   stallCheck(stallLeaf, leafHealth, enableLeaf, "Leaf");
   stallCheck(stallCo2, co2Health, enableCo2, "CO2");
+
   rebuildSensorList();
 }
 
@@ -716,204 +694,215 @@ void readSensors() {
 // ----------------------------
 String htmlPage() {
   String page = R"HTML(
-  <!doctype html>
-  <html lang="de">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GrowSensor</title>
-    <style>
-      :root { color-scheme: light dark; }
-      body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #0f172a; color: #e2e8f0; }
-      header { padding: 16px; background: #111827; box-shadow: 0 2px 6px rgba(0,0,0,0.25); position: sticky; top: 0; z-index: 10; }
-      h1 { margin: 0; font-size: 1.2rem; }
-      main { padding: 16px; display: grid; gap: 12px; }
-      .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px; box-shadow: 0 4px 8px rgba(0,0,0,0.25); }
-      .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-      .value { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
-      label { display: block; margin-top: 8px; font-size: 0.9rem; }
-      input, select, button { width: 100%; padding: 10px; margin-top: 4px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; color: #e2e8f0; }
-      button { cursor: pointer; border: none; background: linear-gradient(120deg, #22d3ee, #6366f1); color: #0b1220; font-weight: 600; }
-      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-      .row > * { flex: 1; }
-      .status { font-weight: 600; }
-      .status.ok { color: #34d399; }
-      .status.err { color: #f87171; }
-      .logbox { width: 100%; min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; white-space: pre-wrap; }
-      .chart { position: relative; height: 200px; }
-      canvas { width: 100%; height: 200px; }
-      footer { text-align: center; padding: 12px; font-size: 0.85rem; color: #94a3b8; }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div class="row" style="justify-content:space-between;align-items:center;">
-        <h1 style="flex:1;">GrowSensor – v0.2</h1>
-        <div class="row" style="flex:0 0 auto; max-width:320px; justify-content:flex-end;">
-          <span id="devStatus" class="status err" style="width:auto;">Dev gesperrt</span>
-          <button id="devUnlockBtn" style="width:auto;">Dev-Modus</button>
-        </div>
-      </div>
-    </header>
-    <main>
-      <section class="grid">
-        <article class="card"><div>Licht (Lux)</div><div class="value" id="lux">–</div></article>
-        <article class="card"><div>PPFD (µmol/m²/s)</div><div class="value" id="ppfd">–</div><div style="font-size:0.85rem;margin-top:6px;">Spektrum: <span id="ppfdSpectrum">–</span><br/>Faktor: <span id="ppfdFactor">–</span></div></article>
-        <article class="card"><div>CO₂ (ppm)</div><div class="value" id="co2">–</div></article>
-        <article class="card"><div>Umgebungstemperatur (°C)</div><div class="value" id="temp">–</div></article>
-        <article class="card"><div>Luftfeuchte (%)</div><div class="value" id="humidity">–</div></article>
-        <article class="card"><div>Leaf-Temp (°C)</div><div class="value" id="leaf">–</div></article>
-        <article class="card"><div>VPD (kPa)</div><div class="value" id="vpd">–</div><div id="vpdStatus" style="font-size:0.85rem;margin-top:6px;"></div></article>
-      </section>
-
-      <section class="card" id="avgCard">
-        <h3 style="margin-top:0">Gestern Ø (24h)</h3>
-        <div class="grid">
-          <div><strong>Lux:</strong> <span id="avgLux">–</span></div>
-          <div><strong>CO₂:</strong> <span id="avgCo2">–</span></div>
-          <div><strong>Temp:</strong> <span id="avgTemp">–</span></div>
-          <div><strong>Feuchte:</strong> <span id="avgHum">–</span></div>
-          <div><strong>VPD:</strong> <span id="avgVpd">–</span></div>
-        </div>
-      </section>
-
-      <section class="card">
-        <h3 style="margin-top:0">Live Verlauf</h3>
-        <div class="chart"><canvas id="chart"></canvas></div>
-      </section>
-
-      <section class="grid">
-        <article class="card">
-          <h3 style="margin-top:0">Spektrum wählen</h3>
-          <label for="channel">LED Kanal</label>
-          <select id="channel">
-            <option value="full_spectrum">Vollspectrum</option>
-            <option value="white">White</option>
-            <option value="bloom">Blütekanal</option>
-          </select>
-          <button id="saveChannel">Speichern</button>
-          <label for="vpdStage" style="margin-top:12px; display:block;">Pflanzenstadium (VPD)</label>
-          <select id="vpdStage">
-            <option value="seedling">Steckling / Sämling (1 Woche)</option>
-            <option value="veg">Vegitativ</option>
-            <option value="bloom">Blütephase</option>
-            <option value="late_bloom">Späteblüte</option>
-          </select>
-          <p id="vpdTarget" style="margin-top:8px; color:#a5b4fc"></p>
-        </article>
-
-        <article class="card">
-          <h3 style="margin-top:0">Wi-Fi Setup</h3>
-          <div class="row">
-            <div style="flex:2">
-              <label for="ssid">SSID</label>
-              <select id="ssid"></select>
-            </div>
-            <button id="scanWifi" style="flex:1; margin-top: 28px;">Netzwerke suchen</button>
-          </div>
-          <label for="pass">Passwort</label>
-          <input id="pass" type="password" placeholder="WLAN Passwort" />
-          <div class="row">
-            <label style="flex:1; display:flex; gap:6px; align-items:center;">
-              <input type="checkbox" id="staticIpToggle" style="width:auto;"> Static IP
-            </label>
-          </div>
-          <div class="row">
-            <input id="ip" placeholder="IP (optional)" />
-            <input id="gw" placeholder="Gateway (optional)" />
-            <input id="sn" placeholder="Subnet (optional)" />
-          </div>
-          <button id="saveWifi" class="requires-dev">Verbinden & Speichern</button>
-          <button id="resetWifi" class="requires-dev" style="margin-top:8px;background:#ef4444;color:#fff;">WLAN Reset</button>
-          <p id="wifiStatus" class="status" style="margin-top:8px;"></p>
-        </article>
-
-        <article class="card">
-          <h3 style="margin-top:0">Sensoren</h3>
-          <div id="sensorList"></div>
-          <div class="row" style="margin-top:8px;">
-            <select id="replaceFrom"></select>
-            <input id="replaceTo" placeholder="Neuer Sensor ID" />
-          </div>
-          <div class="row">
-            <input id="replaceType" placeholder="Typ (z.B. sht31)" />
-            <select id="replaceCategory">
-              <option value="light">Licht</option>
-              <option value="climate">Klima</option>
-            <option value="leaf">Leaf</option>
-            <option value="co2">CO₂</option>
-          </select>
-            <button id="replaceBtn" class="requires-dev">Sensor ersetzen</button>
-          </div>
-          <label for="climateType" style="margin-top:12px; display:block;">Klimasensor</label>
-          <select id="climateType">
-            <option value="sht31">SHT31/SHT30</option>
-            <option value="dht22">DHT22/AM2302</option>
-            <option value="bme280">BME280</option>
-            <option value="bme680">BME680</option>
-            <option value="ds18b20">DS18B20 (Temp-only)</option>
-          </select>
-          <label for="co2Type" style="margin-top:12px; display:block;">CO₂ Sensor</label>
-          <select id="co2Type">
-            <option value="mhz19">MH-Z19B/C</option>
-            <option value="senseair_s8">Senseair S8</option>
-            <option value="scd30">Sensirion SCD30</option>
-            <option value="scd40">Sensirion SCD40</option>
-            <option value="scd41">Sensirion SCD41</option>
-          </select>
-          <button id="saveTypes" class="requires-dev" style="margin-top:8px;">Sensortypen speichern</button>
-        </article>
-      </section>
-
-      <section class="card">
-        <h3 style="margin-top:0">Logs (letzte 6h)</h3>
-        <button id="refreshLogs">Aktualisieren</button>
-        <button id="downloadLogs">Download</button>
-        <pre class="logbox" id="logBox"></pre>
-      </section>
-
-      <section class="card">
-        <h3 style="margin-top:0">Partner & Supporter</h3>
-        <div id="partnerList"></div>
-        <div class="row" style="margin-top:12px;">
-          <input id="partnerId" placeholder="ID" />
-          <input id="partnerName" placeholder="Name" />
-        </div>
-        <input id="partnerDesc" placeholder="Beschreibung" />
-        <input id="partnerUrl" placeholder="URL (optional)" />
-        <input id="partnerLogo" placeholder="Logo (optional)" />
-        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;"><input type="checkbox" id="partnerEnabled" checked style="width:auto;" /> Aktiv</label>
-        <button id="savePartner" class="requires-dev">Partner speichern</button>
-      </section>
-    </main>
-    <footer>Growcontroller v0.2 • Sensorgehäuse v0.3</footer>
-
-    <div id="devModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);z-index:60;">
-      <div class="card" style="max-width:420px;width:90%;">
-        <h3 style="margin-top:0">Dev-Modus freischalten</h3>
-        <p style="margin-top:0;">Bitte gib den Code ein, um Entwicklungsfunktionen zu aktivieren.</p>
-        <input id="devCode" type="password" placeholder="Test1234#" />
-        <div class="row" style="margin-top:8px;">
-          <button id="devUnlockConfirm" style="flex:2;">Freischalten</button>
-          <button id="devUnlockCancel" style="flex:1;background:#334155;color:#e2e8f0;">Abbrechen</button>
-        </div>
-        <p id="devUnlockStatus" class="status" style="margin-top:8px;"></p>
-      </div>
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GrowSensor</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px; background: #111827; box-shadow: 0 2px 6px rgba(0,0,0,0.25); position: sticky; top: 0; z-index: 10; }
+    h1 { margin: 0; font-size: 1.2rem; }
+    main { padding: 16px; display: grid; gap: 12px; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px; box-shadow: 0 4px 8px rgba(0,0,0,0.25); }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .value { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+    label { display: block; margin-top: 8px; font-size: 0.9rem; }
+    input, select, button { width: 100%; padding: 10px; margin-top: 4px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1220; color: #e2e8f0; }
+    button { cursor: pointer; border: none; background: linear-gradient(120deg, #22d3ee, #6366f1); color: #0b1220; font-weight: 600; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row > * { flex: 1; }
+    .status { font-weight: 600; }
+    .status.ok { color: #34d399; }
+    .status.err { color: #f87171; }
+    .logbox { width: 100%; min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; white-space: pre-wrap; }
+    .chart { position: relative; height: 200px; }
+    canvas { width: 100%; height: 200px; }
+    footer { text-align: center; padding: 12px; font-size: 0.85rem; color: #94a3b8; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="row" style="justify-content:space-between;align-items:center;">
+    <h1 style="flex:1;">GrowSensor – v0.2</h1>
+    <div class="row" style="flex:0 0 auto; max-width:320px; justify-content:flex-end;">
+      <span id="devStatus" class="status err" style="width:auto;">Dev gesperrt</span>
+      <button id="devUnlockBtn" style="width:auto;">Dev-Modus</button>
     </div>
+  </div>
+</header>
 
-    <script>
+<main>
+  <section class="grid">
+    <article class="card"><div>Licht (Lux)</div><div class="value" id="lux">–</div></article>
+    <article class="card"><div>PPFD (µmol/m²/s)</div><div class="value" id="ppfd">–</div>
+      <div style="font-size:0.85rem;margin-top:6px;">
+        Spektrum: <span id="ppfdSpectrum">–</span><br/>Faktor: <span id="ppfdFactor">–</span>
+      </div>
+    </article>
+    <article class="card"><div>CO₂ (ppm)</div><div class="value" id="co2">–</div></article>
+    <article class="card"><div>Umgebungstemperatur (°C)</div><div class="value" id="temp">–</div></article>
+    <article class="card"><div>Luftfeuchte (%)</div><div class="value" id="humidity">–</div></article>
+    <article class="card"><div>Leaf-Temp (°C)</div><div class="value" id="leaf">–</div></article>
+    <article class="card"><div>VPD (kPa)</div><div class="value" id="vpd">–</div><div id="vpdStatus" style="font-size:0.85rem;margin-top:6px;"></div></article>
+  </section>
+
+  <section class="card" id="avgCard">
+    <h3 style="margin-top:0">Gestern Ø (24h)</h3>
+    <div class="grid">
+      <div><strong>Lux:</strong> <span id="avgLux">–</span></div>
+      <div><strong>CO₂:</strong> <span id="avgCo2">–</span></div>
+      <div><strong>Temp:</strong> <span id="avgTemp">–</span></div>
+      <div><strong>Feuchte:</strong> <span id="avgHum">–</span></div>
+      <div><strong>VPD:</strong> <span id="avgVpd">–</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Live Verlauf</h3>
+    <div class="chart"><canvas id="chart"></canvas></div>
+  </section>
+
+  <section class="grid">
+    <article class="card">
+      <h3 style="margin-top:0">Spektrum wählen</h3>
+      <label for="channel">LED Kanal</label>
+      <select id="channel">
+        <option value="full_spectrum">Vollspectrum</option>
+        <option value="white">White</option>
+        <option value="bloom">Blütekanal</option>
+      </select>
+      <button id="saveChannel">Speichern</button>
+
+      <label for="vpdStage" style="margin-top:12px; display:block;">Pflanzenstadium (VPD)</label>
+      <select id="vpdStage">
+        <option value="seedling">Steckling / Sämling</option>
+        <option value="veg">Vegitativ</option>
+        <option value="bloom">Blütephase</option>
+        <option value="late_bloom">Späteblüte</option>
+      </select>
+      <p id="vpdTarget" style="margin-top:8px; color:#a5b4fc"></p>
+    </article>
+
+    <article class="card">
+      <h3 style="margin-top:0">Wi-Fi Setup</h3>
+      <div class="row">
+        <div style="flex:2">
+          <label for="ssid">SSID</label>
+          <select id="ssid"></select>
+        </div>
+        <button id="scanWifi" style="flex:1; margin-top: 28px;">Netzwerke suchen</button>
+      </div>
+      <label for="pass">Passwort</label>
+      <input id="pass" type="password" placeholder="WLAN Passwort" />
+
+      <div class="row">
+        <label style="flex:1; display:flex; gap:6px; align-items:center;">
+          <input type="checkbox" id="staticIpToggle" style="width:auto;"> Static IP
+        </label>
+      </div>
+
+      <div class="row">
+        <input id="ip" placeholder="IP (optional)" />
+        <input id="gw" placeholder="Gateway (optional)" />
+        <input id="sn" placeholder="Subnet (optional)" />
+      </div>
+
+      <button id="saveWifi" class="requires-dev">Verbinden & Speichern</button>
+      <button id="resetWifi" class="requires-dev" style="margin-top:8px;background:#ef4444;color:#fff;">WLAN Reset</button>
+      <p id="wifiStatus" class="status" style="margin-top:8px;"></p>
+    </article>
+
+    <article class="card">
+      <h3 style="margin-top:0">Sensoren</h3>
+      <div id="sensorList"></div>
+      <div class="row" style="margin-top:8px;">
+        <select id="replaceFrom"></select>
+        <input id="replaceTo" placeholder="Neuer Sensor ID" />
+      </div>
+      <div class="row">
+        <input id="replaceType" placeholder="Typ (z.B. sht31)" />
+        <select id="replaceCategory">
+          <option value="light">Licht</option>
+          <option value="climate">Klima</option>
+          <option value="leaf">Leaf</option>
+          <option value="co2">CO₂</option>
+        </select>
+        <button id="replaceBtn" class="requires-dev">Sensor ersetzen</button>
+      </div>
+
+      <label for="climateType" style="margin-top:12px; display:block;">Klimasensor</label>
+      <select id="climateType">
+        <option value="sht31">SHT31/SHT30</option>
+        <option value="dht22">DHT22/AM2302</option>
+        <option value="bme280">BME280</option>
+        <option value="bme680">BME680</option>
+        <option value="ds18b20">DS18B20 (Temp-only)</option>
+      </select>
+
+      <label for="co2Type" style="margin-top:12px; display:block;">CO₂ Sensor</label>
+      <select id="co2Type">
+        <option value="mhz19">MH-Z19B/C</option>
+        <option value="senseair_s8">Senseair S8</option>
+        <option value="scd30">Sensirion SCD30</option>
+        <option value="scd40">Sensirion SCD40</option>
+        <option value="scd41">Sensirion SCD41</option>
+      </select>
+
+      <button id="saveTypes" class="requires-dev" style="margin-top:8px;">Sensortypen speichern</button>
+    </article>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Logs (letzte 6h)</h3>
+    <button id="refreshLogs">Aktualisieren</button>
+    <button id="downloadLogs">Download</button>
+    <pre class="logbox" id="logBox"></pre>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Partner & Supporter</h3>
+    <div id="partnerList"></div>
+    <div class="row" style="margin-top:12px;">
+      <input id="partnerId" placeholder="ID" />
+      <input id="partnerName" placeholder="Name" />
+    </div>
+    <input id="partnerDesc" placeholder="Beschreibung" />
+    <input id="partnerUrl" placeholder="URL (optional)" />
+    <input id="partnerLogo" placeholder="Logo (optional)" />
+    <label style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+      <input type="checkbox" id="partnerEnabled" checked style="width:auto;" /> Aktiv
+    </label>
+    <button id="savePartner" class="requires-dev">Partner speichern</button>
+  </section>
+</main>
+
+<footer>Growcontroller v0.2 • Sensorgehäuse v0.3</footer>
+
+<div id="devModal" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);z-index:60;">
+  <div class="card" style="max-width:420px;width:90%;">
+    <h3 style="margin-top:0">Dev-Modus freischalten</h3>
+    <p style="margin-top:0;">Bitte gib den Code ein, um Entwicklungsfunktionen zu aktivieren.</p>
+    <input id="devCode" type="password" placeholder="Test1234#" />
+    <div class="row" style="margin-top:8px;">
+      <button id="devUnlockConfirm" style="flex:2;">Freischalten</button>
+      <button id="devUnlockCancel" style="flex:1;background:#334155;color:#e2e8f0;">Abbrechen</button>
+    </div>
+    <p id="devUnlockStatus" class="status" style="margin-top:8px;"></p>
+  </div>
+</div>
+
+<script>
 let devUnlocked = false;
 
 function updateDevLockState() {
   const status = document.getElementById('devStatus');
   status.textContent = devUnlocked ? 'Dev aktiv' : 'Dev gesperrt';
   status.className = 'status ' + (devUnlocked ? 'ok' : 'err');
-  document.querySelectorAll('.requires-dev').forEach(el => {
-    el.disabled = !devUnlocked;
-  });
-  document.querySelectorAll('.dev-toggle').forEach(el => {
-    el.disabled = !devUnlocked;
-  });
+  document.querySelectorAll('.requires-dev').forEach(el => el.disabled = !devUnlocked);
+  document.querySelectorAll('.dev-toggle').forEach(el => el.disabled = !devUnlocked);
 }
 
 function showDevModal(message = '') {
@@ -941,238 +930,281 @@ function ensureDev(statusEl = null) {
 }
 
 async function authedFetch(url, options = {}) {
+  // Auth ist deaktiviert -> plain fetch
   return fetch(url, options);
 }
-      const chartCanvas = document.getElementById('chart');
-      const ctx = chartCanvas.getContext('2d');
-      const maxPoints = 288; // 5-min samples for 24h
-      const history = { labels: [], lux: [], co2: [], temp: [], humidity: [], vpd: [] };
-      let lastHistoryPush = 0;
 
-      function drawChart() {
-        ctx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
-        const width = chartCanvas.width;
-        const height = chartCanvas.height;
-        ctx.strokeStyle = '#1f2937';
-        for (let i = 1; i < 5; i++) {
-          const y = (height / 5) * i;
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
-        }
-        const series = [
-          { data: history.lux, color: '#22d3ee', label: 'Lux' },
-          { data: history.co2, color: '#f59e0b', label: 'CO₂' },
-          { data: history.temp, color: '#34d399', label: 'Temp' },
-          { data: history.vpd, color: '#a855f7', label: 'VPD' },
-        ];
-        series.forEach((serie, index) => {
-          if (!serie.data.length) return;
-          const maxVal = Math.max(...serie.data);
-          const minVal = Math.min(...serie.data);
-          const span = Math.max(maxVal - minVal, 0.0001);
-          ctx.beginPath();
-          serie.data.forEach((val, i) => {
-            const x = (i / Math.max(series[0].data.length - 1, 1)) * width;
-            const y = height - ((val - minVal) / span) * height;
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-          });
-          ctx.strokeStyle = serie.color;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        });
+const chartCanvas = document.getElementById('chart');
+const ctx = chartCanvas.getContext('2d');
+const maxPoints = 288;
+const history = { labels: [], lux: [], co2: [], temp: [], humidity: [], vpd: [] };
+let lastHistoryPush = 0;
+
+function drawChart() {
+  ctx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+  const width = chartCanvas.width;
+  const height = chartCanvas.height;
+
+  ctx.strokeStyle = '#1f2937';
+  for (let i = 1; i < 5; i++) {
+    const y = (height / 5) * i;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+  }
+
+  const series = [
+    { data: history.lux, color: '#22d3ee', label: 'Lux' },
+    { data: history.co2, color: '#f59e0b', label: 'CO₂' },
+    { data: history.temp, color: '#34d399', label: 'Temp' },
+    { data: history.vpd, color: '#a855f7', label: 'VPD' },
+  ];
+
+  series.forEach((serie) => {
+    if (!serie.data.length) return;
+    const maxVal = Math.max(...serie.data);
+    const minVal = Math.min(...serie.data);
+    const span = Math.max(maxVal - minVal, 0.0001);
+
+    ctx.beginPath();
+    serie.data.forEach((val, i) => {
+      const x = (i / Math.max(series[0].data.length - 1, 1)) * width;
+      const y = height - ((val - minVal) / span) * height;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = serie.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+}
+
+function pushHistory(obj) {
+  const now = Date.now();
+  if (lastHistoryPush && (now - lastHistoryPush < 300000)) return;
+  lastHistoryPush = now;
+
+  history.labels.push(new Date().toLocaleTimeString());
+  history.lux.push(obj.lux);
+  history.co2.push(obj.co2);
+  history.temp.push(obj.temp);
+  history.humidity.push(obj.humidity);
+  history.vpd.push(obj.vpd);
+
+  Object.keys(history).forEach(key => {
+    if (history[key].length > maxPoints) history[key].shift();
+  });
+
+  drawChart();
+  updateAverages();
+}
+
+function avg(arr) {
+  const filtered = arr.filter(v => typeof v === 'number' && !Number.isNaN(v));
+  if (!filtered.length) return NaN;
+  return filtered.reduce((a,b)=>a+b,0) / filtered.length;
+}
+
+function updateAverages() {
+  const set = (id, val, digits=1) => {
+    document.getElementById(id).textContent = Number.isNaN(val) ? '–' : val.toFixed(digits);
+  };
+  set('avgLux', avg(history.lux));
+  set('avgCo2', avg(history.co2), 0);
+  set('avgTemp', avg(history.temp));
+  set('avgHum', avg(history.humidity));
+  set('avgVpd', avg(history.vpd), 3);
+}
+
+async function fetchData() {
+  try {
+    const res = await authedFetch('/api/telemetry');
+    const data = await res.json();
+    document.getElementById('lux').textContent = data.lux?.toFixed(1) ?? '–';
+    document.getElementById('ppfd').textContent = data.ppfd?.toFixed(1) ?? '–';
+    document.getElementById('ppfdFactor').textContent = (data.ppfd_factor && !Number.isNaN(data.ppfd_factor)) ? data.ppfd_factor.toFixed(4) : '–';
+    document.getElementById('ppfdSpectrum').textContent = document.getElementById('channel').selectedOptions[0]?.textContent || '–';
+    document.getElementById('co2').textContent = data.co2 ?? '–';
+    document.getElementById('temp').textContent = data.temp?.toFixed(1) ?? '–';
+    document.getElementById('humidity').textContent = data.humidity?.toFixed(1) ?? '–';
+    document.getElementById('leaf').textContent = data.leaf?.toFixed(1) ?? '–';
+    document.getElementById('vpd').textContent = (data.vpd && !Number.isNaN(data.vpd)) ? data.vpd.toFixed(3) : '–';
+    document.getElementById('vpdTarget').textContent = `Ziel: ${data.vpd_low?.toFixed(2) ?? '–'} – ${data.vpd_high?.toFixed(2) ?? '–'} kPa`;
+
+    const statusEl = document.getElementById('vpdStatus');
+    const status = data.vpd_status ?? 0;
+    if (status < 0) { statusEl.textContent = 'unter Ziel'; statusEl.style.color = '#f59e0b'; }
+    else if (status > 0) { statusEl.textContent = 'über Ziel'; statusEl.style.color = '#f87171'; }
+    else { statusEl.textContent = 'im Ziel'; statusEl.style.color = '#34d399'; }
+
+    pushHistory(data);
+  } catch (err) {
+    console.warn('telemetry failed', err);
+  }
+}
+
+async function loadSettings() {
+  const res = await authedFetch('/api/settings');
+  const data = await res.json();
+  document.getElementById('channel').value = data.channel;
+  document.getElementById('vpdStage').value = data.vpd_stage;
+
+  document.getElementById('wifiStatus').textContent = data.wifi;
+  document.getElementById('wifiStatus').className = 'status ' + (data.connected ? 'ok' : 'err');
+
+  document.getElementById('ip').value = data.ip || '';
+  document.getElementById('gw').value = data.gw || '';
+  document.getElementById('sn').value = data.sn || '';
+  document.getElementById('staticIpToggle').checked = data.static || false;
+
+  await loadSensors();
+}
+
+async function loadSensors() {
+  const res = await authedFetch('/api/sensors');
+  const data = await res.json();
+  const container = document.getElementById('sensorList');
+  container.innerHTML = '';
+
+  const replaceFrom = document.getElementById('replaceFrom');
+  replaceFrom.innerHTML = '';
+
+  data.sensors.forEach(sensor => {
+    const row = document.createElement('div');
+    row.className = 'row';
+
+    const label = document.createElement('label');
+    label.style.flex = '2';
+    label.textContent = `${sensor.name} (${sensor.id})`;
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = sensor.enabled;
+    toggle.disabled = !devUnlocked;
+    toggle.classList.add('dev-toggle');
+    toggle.style.flex = '0.2';
+
+    toggle.addEventListener('change', async () => {
+      if (!devUnlocked) {
+        toggle.checked = !toggle.checked;
+        showDevModal();
+        return;
       }
-
-      function pushHistory(obj) {
-        const now = Date.now();
-        if (lastHistoryPush && (now - lastHistoryPush < 300000)) return; // 5 minutes
-        lastHistoryPush = now;
-        history.labels.push(new Date().toLocaleTimeString());
-        history.lux.push(obj.lux);
-        history.co2.push(obj.co2);
-        history.temp.push(obj.temp);
-        history.humidity.push(obj.humidity);
-        history.vpd.push(obj.vpd);
-        Object.keys(history).forEach(key => {
-          if (history[key].length > maxPoints) history[key].shift();
-        });
-        drawChart();
-        updateAverages();
-      }
-
-      function avg(arr) {
-        const filtered = arr.filter(v => typeof v === 'number' && !Number.isNaN(v));
-        if (!filtered.length) return NaN;
-        return filtered.reduce((a,b)=>a+b,0) / filtered.length;
-      }
-
-      function updateAverages() {
-        const set = (id, val, digits=1) => {
-          document.getElementById(id).textContent = Number.isNaN(val) ? '–' : val.toFixed(digits);
-        };
-        set('avgLux', avg(history.lux));
-        set('avgCo2', avg(history.co2), 0);
-        set('avgTemp', avg(history.temp));
-        set('avgHum', avg(history.humidity));
-        set('avgVpd', avg(history.vpd), 3);
-      }
-
-      async function fetchData() {
-        try {
-          const res = await authedFetch('/api/telemetry');
-          const data = await res.json();
-          document.getElementById('lux').textContent = data.lux?.toFixed(1) ?? '–';
-          document.getElementById('ppfd').textContent = data.ppfd?.toFixed(1) ?? '–';
-          document.getElementById('ppfdFactor').textContent = (data.ppfd_factor && !Number.isNaN(data.ppfd_factor)) ? data.ppfd_factor.toFixed(4) : '–';
-          document.getElementById('ppfdSpectrum').textContent = document.getElementById('channel').selectedOptions[0]?.textContent || '–';
-          document.getElementById('co2').textContent = data.co2 ?? '–';
-          document.getElementById('temp').textContent = data.temp?.toFixed(1) ?? '–';
-          document.getElementById('humidity').textContent = data.humidity?.toFixed(1) ?? '–';
-          document.getElementById('leaf').textContent = data.leaf?.toFixed(1) ?? '–';
-          document.getElementById('vpd').textContent = (data.vpd && !Number.isNaN(data.vpd)) ? data.vpd.toFixed(3) : '–';
-          document.getElementById('vpdTarget').textContent = `Ziel: ${data.vpd_low?.toFixed(2) ?? '–'} – ${data.vpd_high?.toFixed(2) ?? '–'} kPa`;
-          const statusEl = document.getElementById('vpdStatus');
-          const status = data.vpd_status ?? 0;
-          if (status < 0) { statusEl.textContent = 'unter Ziel'; statusEl.style.color = '#f59e0b'; }
-          else if (status > 0) { statusEl.textContent = 'über Ziel'; statusEl.style.color = '#f87171'; }
-          else { statusEl.textContent = 'im Ziel'; statusEl.style.color = '#34d399'; }
-          pushHistory(data);
-        } catch (err) {
-          console.warn('telemetry failed', err);
-        }
-      }
-
-      async function loadSettings() {
-        const res = await authedFetch('/api/settings');
-        const data = await res.json();
-        document.getElementById('channel').value = data.channel;
-        document.getElementById('vpdStage').value = data.vpd_stage;
-        document.getElementById('wifiStatus').textContent = data.wifi;
-        document.getElementById('wifiStatus').className = 'status ' + (data.connected ? 'ok' : 'err');
-        document.getElementById('ip').value = data.ip || '';
-        document.getElementById('gw').value = data.gw || '';
-        document.getElementById('sn').value = data.sn || '';
-        document.getElementById('staticIpToggle').checked = data.static || false;
-        await loadSensors();
-      }
-
-      async function loadSensors() {
-        const res = await authedFetch('/api/sensors');
-        const data = await res.json();
-        const container = document.getElementById('sensorList');
-        container.innerHTML = '';
-        const replaceFrom = document.getElementById('replaceFrom');
-        replaceFrom.innerHTML = '';
-        data.sensors.forEach(sensor => {
-          const row = document.createElement('div');
-          row.className = 'row';
-          const label = document.createElement('label');
-          label.style.flex = '2';
-          label.textContent = `${sensor.name} (${sensor.id})`;
-          const toggle = document.createElement('input');
-          toggle.type = 'checkbox';
-          toggle.checked = sensor.enabled;
-          toggle.disabled = !devUnlocked;
-          toggle.classList.add('dev-toggle');
-          toggle.style.flex = '0.2';
-          toggle.addEventListener('change', async () => {
-            if (!devUnlocked) {
-              toggle.checked = !toggle.checked;
-              showDevModal();
-              return;
-            }
-            await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=${sensor.id}&enabled=${toggle.checked ? 1 : 0}`});
-          });
-          const status = document.createElement('span');
-          status.className = 'status ' + (sensor.enabled ? (sensor.healthy ? 'ok' : 'err') : 'err');
-          status.style.flex = '1';
-          status.textContent = sensor.enabled ? (sensor.healthy ? 'aktiv' : 'keine Daten') : 'disabled';
-          row.appendChild(label);
-          row.appendChild(toggle);
-          row.appendChild(status);
-          container.appendChild(row);
-          const opt = document.createElement('option');
-          opt.value = sensor.id;
-          opt.textContent = `${sensor.id} (${sensor.category})`;
-          replaceFrom.appendChild(opt);
-        });
-        document.getElementById('climateType').value = data.climate_type;
-        document.getElementById('co2Type').value = data.co2_type;
-      }
-
-      async function scanNetworks() {
-        document.getElementById('wifiStatus').textContent = 'Suche Netzwerke...';
-        const res = await authedFetch('/api/networks');
-        const data = await res.json();
-        const ssidSelect = document.getElementById('ssid');
-        ssidSelect.innerHTML = '';
-        data.networks.forEach(n => {
-          const opt = document.createElement('option');
-          opt.value = n.ssid;
-          opt.textContent = `${n.ssid} (${n.rssi}dBm)`;
-          ssidSelect.appendChild(opt);
-        });
-        if (data.networks.length === 0) {
-          const opt = document.createElement('option');
-          opt.textContent = 'Keine Netzwerke gefunden';
-          ssidSelect.appendChild(opt);
-        }
-        document.getElementById('wifiStatus').textContent = 'Suche abgeschlossen';
-      }
-
-      document.getElementById('saveChannel').addEventListener('click', async () => {
-        const channel = document.getElementById('channel').value;
-        const vpdStage = document.getElementById('vpdStage').value;
-        await authedFetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `channel=${channel}&vpd_stage=${vpdStage}` });
-        document.getElementById('wifiStatus').textContent = 'Spektrum gespeichert';
+      await authedFetch('/api/sensors', {
+        method: 'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:`id=${encodeURIComponent(sensor.id)}&enabled=${toggle.checked ? 1 : 0}`
       });
+    });
 
-      document.getElementById('saveWifi').addEventListener('click', async () => {
-        if (!ensureDev(document.getElementById('wifiStatus'))) return;
-        const ssid = document.getElementById('ssid').value;
-        const pass = document.getElementById('pass').value;
-        const staticIp = document.getElementById('staticIpToggle').checked;
-        const ip = document.getElementById('ip').value;
-        const gw = document.getElementById('gw').value;
-        const sn = document.getElementById('sn').value;
-        document.getElementById('wifiStatus').textContent = 'Speichern & Neustart...';
-        const res = await authedFetch('/api/wifi', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: `ssid=${encodeURIComponent(ssid)}&pass=${encodeURIComponent(pass)}&static=${staticIp ? 1 : 0}&ip=${encodeURIComponent(ip)}&gw=${encodeURIComponent(gw)}&sn=${encodeURIComponent(sn)}` });
-        const text = await res.text();
-        if (res.ok) {
-          document.getElementById('wifiStatus').textContent = 'Verbunden mit deiner Pflanze';
-          document.getElementById('wifiStatus').className = 'status ok';
-        } else {
-          document.getElementById('wifiStatus').textContent = 'Falsches Passwort';
-          document.getElementById('wifiStatus').className = 'status err';
-        }
-      });
+    const status = document.createElement('span');
+    status.className = 'status ' + (sensor.enabled ? (sensor.healthy ? 'ok' : 'err') : 'err');
+    status.style.flex = '1';
+    status.textContent = sensor.enabled ? (sensor.healthy ? 'aktiv' : 'keine Daten') : 'disabled';
 
-      document.getElementById('resetWifi').addEventListener('click', async () => {
-        if (!ensureDev(document.getElementById('wifiStatus'))) return;
-        document.getElementById('wifiStatus').textContent = 'Werkseinstellungen...';
-        await authedFetch('/api/reset', { method: 'POST' });
-        setTimeout(() => location.reload(), 1500);
-      });
+    row.appendChild(label);
+    row.appendChild(toggle);
+    row.appendChild(status);
+    container.appendChild(row);
 
-      async function loadLogs() {
-        const res = await authedFetch('/api/logs');
-        const data = await res.json();
-        document.getElementById('logBox').textContent = data.join('\n');
-      }
+    const opt = document.createElement('option');
+    opt.value = sensor.id;
+    opt.textContent = `${sensor.id} (${sensor.category})`;
+    replaceFrom.appendChild(opt);
+  });
 
-      async function downloadLogs() {
-        const res = await authedFetch('/api/logs');
-        const data = await res.json();
-        const blob = new Blob([data.join('\n')], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'growsensor-log.txt';
-        a.click();
-        URL.revokeObjectURL(url);
-      }
+  document.getElementById('climateType').value = data.climate_type;
+  document.getElementById('co2Type').value = data.co2_type;
+}
+
+async function scanNetworks() {
+  document.getElementById('wifiStatus').textContent = 'Suche Netzwerke...';
+  const res = await authedFetch('/api/networks');
+  const data = await res.json();
+
+  const ssidSelect = document.getElementById('ssid');
+  ssidSelect.innerHTML = '';
+
+  data.networks.forEach(n => {
+    const opt = document.createElement('option');
+    opt.value = n.ssid;
+    opt.textContent = `${n.ssid} (${n.rssi}dBm)`;
+    ssidSelect.appendChild(opt);
+  });
+
+  if (data.networks.length === 0) {
+    const opt = document.createElement('option');
+    opt.textContent = 'Keine Netzwerke gefunden';
+    ssidSelect.appendChild(opt);
+  }
+
+  document.getElementById('wifiStatus').textContent = 'Suche abgeschlossen';
+}
+
+document.getElementById('saveChannel').addEventListener('click', async () => {
+  const channel = document.getElementById('channel').value;
+  const vpdStage = document.getElementById('vpdStage').value;
+  await authedFetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body: `channel=${encodeURIComponent(channel)}&vpd_stage=${encodeURIComponent(vpdStage)}`
+  });
+  document.getElementById('wifiStatus').textContent = 'Spektrum gespeichert';
+});
+
+document.getElementById('saveWifi').addEventListener('click', async () => {
+  if (!ensureDev(document.getElementById('wifiStatus'))) return;
+
+  const ssid = document.getElementById('ssid').value;
+  const pass = document.getElementById('pass').value;
+  const staticIp = document.getElementById('staticIpToggle').checked;
+  const ip = document.getElementById('ip').value;
+  const gw = document.getElementById('gw').value;
+  const sn = document.getElementById('sn').value;
+
+  document.getElementById('wifiStatus').textContent = 'Speichern & Neustart...';
+
+  const res = await authedFetch('/api/wifi', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body: `ssid=${encodeURIComponent(ssid)}&pass=${encodeURIComponent(pass)}&static=${staticIp ? 1 : 0}&ip=${encodeURIComponent(ip)}&gw=${encodeURIComponent(gw)}&sn=${encodeURIComponent(sn)}`
+  });
+
+  if (res.ok) {
+    document.getElementById('wifiStatus').textContent = 'Verbunden mit deiner Pflanze';
+    document.getElementById('wifiStatus').className = 'status ok';
+  } else {
+    document.getElementById('wifiStatus').textContent = 'Falsches Passwort';
+    document.getElementById('wifiStatus').className = 'status err';
+  }
+});
+
+document.getElementById('resetWifi').addEventListener('click', async () => {
+  if (!ensureDev(document.getElementById('wifiStatus'))) return;
+  document.getElementById('wifiStatus').textContent = 'Werkseinstellungen...';
+  await authedFetch('/api/reset', { method: 'POST' });
+  setTimeout(() => location.reload(), 1500);
+});
+
+async function loadLogs() {
+  const res = await authedFetch('/api/logs');
+  const data = await res.json();
+  document.getElementById('logBox').textContent = data.join('\n');
+}
+
+async function downloadLogs() {
+  const res = await authedFetch('/api/logs');
+  const data = await res.json();
+  const blob = new Blob([data.join('\n')], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'growsensor-log.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 document.getElementById('scanWifi').addEventListener('click', scanNetworks);
 document.getElementById('refreshLogs').addEventListener('click', loadLogs);
 document.getElementById('downloadLogs').addEventListener('click', downloadLogs);
+
 document.getElementById('devUnlockBtn').addEventListener('click', () => showDevModal());
 document.getElementById('devUnlockCancel').addEventListener('click', hideDevModal);
 document.getElementById('devUnlockConfirm').addEventListener('click', () => {
@@ -1190,63 +1222,90 @@ document.getElementById('devUnlockConfirm').addEventListener('click', () => {
   }
 });
 
-      document.getElementById('saveTypes').addEventListener('click', async () => {
-        if (!ensureDev()) return;
-        const cType = document.getElementById('climateType').value;
-        const co2Type = document.getElementById('co2Type').value;
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=climate_type&value=${cType}`});
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=co2_type&value=${co2Type}`});
-        await loadSensors();
-      });
-      document.getElementById('replaceBtn').addEventListener('click', async () => {
-        if (!ensureDev()) return;
-        const from = document.getElementById('replaceFrom').value;
-        const to = document.getElementById('replaceTo').value;
-        const type = document.getElementById('replaceType').value;
-        const category = document.getElementById('replaceCategory').value;
-        if (!from || !to) return;
-        await authedFetch('/api/sensors', { method: 'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:`id=replace&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&type=${encodeURIComponent(type)}&category=${encodeURIComponent(category)}`});
-        await loadSensors();
-      });
+document.getElementById('saveTypes').addEventListener('click', async () => {
+  if (!ensureDev()) return;
+  const cType = document.getElementById('climateType').value;
+  const co2Type = document.getElementById('co2Type').value;
 
-      async function loadPartners() {
-        const res = await authedFetch('/api/partners');
-        const data = await res.json();
-        const list = document.getElementById('partnerList');
-        list.innerHTML = '';
-        data.partners.forEach(p => {
-          const card = document.createElement('div');
-          card.className = 'card';
-          card.style.marginTop = '8px';
-          card.innerHTML = `<strong>${p.name}</strong><br/><span style=\"color:#9ca3af;\">${p.description}</span>` + (p.url ? `<br/><a href=\"${p.url}\" target=\"_blank\">Link</a>` : '');
-          list.appendChild(card);
-        });
-      }
+  await authedFetch('/api/sensors', {
+    method: 'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:`id=climate_type&value=${encodeURIComponent(cType)}`
+  });
 
-      document.getElementById('savePartner').addEventListener('click', async () => {
-        if (!ensureDev()) return;
-        const body = new URLSearchParams();
-        body.set('id', document.getElementById('partnerId').value);
-        body.set('name', document.getElementById('partnerName').value);
-        body.set('description', document.getElementById('partnerDesc').value);
-        body.set('url', document.getElementById('partnerUrl').value);
-        body.set('logo', document.getElementById('partnerLogo').value);
-        body.set('enabled', document.getElementById('partnerEnabled').checked ? '1' : '0');
-        await authedFetch('/api/partners', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
-        await loadPartners();
-      });
+  await authedFetch('/api/sensors', {
+    method: 'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:`id=co2_type&value=${encodeURIComponent(co2Type)}`
+  });
 
-      updateDevLockState();
-      setInterval(fetchData, 2500);
-      loadSettings();
-      scanNetworks();
-      loadLogs();
-      loadPartners();
-      fetchData();
-    </script>
-  </body>
-  </html>
-  )HTML";
+  await loadSensors();
+});
+
+document.getElementById('replaceBtn').addEventListener('click', async () => {
+  if (!ensureDev()) return;
+  const from = document.getElementById('replaceFrom').value;
+  const to = document.getElementById('replaceTo').value;
+  const type = document.getElementById('replaceType').value;
+  const category = document.getElementById('replaceCategory').value;
+  if (!from || !to) return;
+
+  await authedFetch('/api/sensors', {
+    method: 'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:`id=replace&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&type=${encodeURIComponent(type)}&category=${encodeURIComponent(category)}`
+  });
+
+  await loadSensors();
+});
+
+async function loadPartners() {
+  const res = await authedFetch('/api/partners');
+  const data = await res.json();
+  const list = document.getElementById('partnerList');
+  list.innerHTML = '';
+
+  data.partners.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.marginTop = '8px';
+    card.innerHTML =
+      `<strong>${p.name}</strong><br/><span style="color:#9ca3af;">${p.description}</span>` +
+      (p.url ? `<br/><a href="${p.url}" target="_blank">Link</a>` : '');
+    list.appendChild(card);
+  });
+}
+
+document.getElementById('savePartner').addEventListener('click', async () => {
+  if (!ensureDev()) return;
+  const body = new URLSearchParams();
+  body.set('id', document.getElementById('partnerId').value);
+  body.set('name', document.getElementById('partnerName').value);
+  body.set('description', document.getElementById('partnerDesc').value);
+  body.set('url', document.getElementById('partnerUrl').value);
+  body.set('logo', document.getElementById('partnerLogo').value);
+  body.set('enabled', document.getElementById('partnerEnabled').checked ? '1' : '0');
+
+  await authedFetch('/api/partners', {
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: body.toString()
+  });
+
+  await loadPartners();
+});
+
+updateDevLockState();
+setInterval(fetchData, 2500);
+loadSettings();
+scanNetworks();
+loadLogs();
+loadPartners();
+fetchData();
+</script>
+</body>
+</html>
+)HTML";
   return page;
 }
 
@@ -1254,7 +1313,6 @@ void handleRoot() { server.send(200, "text/html", htmlPage()); }
 
 void handleNotFound() {
   if (apMode) {
-    // Captive portal redirect while the access point is active
     server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString(), true);
     server.send(302, "text/plain", "");
     return;
@@ -1262,95 +1320,21 @@ void handleNotFound() {
   server.send(404, "text/plain", "Not found");
 }
 
-void handleAuth() {
-  sessionToken = generateToken();
-  String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
-  server.send(200, "application/json", json);
-}
-void handleAuthChange() {
-  if (!server.hasArg("new_pass")) {
-    server.send(400, "text/plain", "missing new_pass");
-    return;
-  }
-
-  String newUser = server.hasArg("new_user") ? server.arg("new_user") : adminUser;
-  String newPass = server.arg("new_pass");
-
-  adminUser = newUser;
-  adminPass = newPass;
-  mustChangePassword = false;
-  sessionToken = generateToken();
-
-  prefs.begin("grow-sensor", false);
-  prefs.putString("admin_user", adminUser);
-  prefs.putString("admin_pass", adminPass);
-  prefs.putBool("must_change", mustChangePassword);
-  prefs.end();
-
-  String json = "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
-  server.send(200, "application/json", json);
-}
-// end handleAuthChange
-
-void handlePartners() {
-  if (!enforceAuth())
-    return;
-  if (server.method() == HTTP_POST) {
-    if (!server.hasArg("id")) {
-      server.send(400, "text/plain", "missing id");
-      return;
-    }
-    String id = server.arg("id");
-    Partner *existing = nullptr;
-    for (auto &p : partners) {
-      if (p.id == id) {
-        existing = &p;
-        break;
-      }
-    }
-    Partner p = existing ? *existing : Partner();
-    p.id = id;
-    if (server.hasArg("name")) p.name = server.arg("name");
-    if (server.hasArg("description")) p.description = server.arg("description");
-    if (server.hasArg("url")) p.url = server.arg("url");
-    if (server.hasArg("logo")) p.logo = server.arg("logo");
-    if (server.hasArg("enabled")) p.enabled = server.arg("enabled") == "1";
-    if (existing) {
-      *existing = p;
-    } else {
-      partners.push_back(p);
-    }
-    savePartners();
-    server.send(200, "text/plain", "saved");
-    return;
-  }
-
-  String json = "{\"partners\":[";
-  size_t count = 0;
-  for (size_t i = 0; i < partners.size(); i++) {
-    const auto &p = partners[i];
-    if (!p.enabled)
-      continue;
-    if (count++ > 0) json += ",";
-    json += "{\"id\":\"" + p.id + "\",\"name\":\"" + p.name + "\",\"description\":\"" + p.description + "\",\"url\":\"" + p.url + "\",\"logo\":\"" + p.logo + "\"}";
-  }
-  json += "]}";
-  server.send(200, "application/json", json);
-}
-
 void handleTelemetry() {
   char json[384];
   snprintf(json, sizeof(json),
            "{\"lux\":%.1f,\"ppfd\":%.1f,\"ppfd_factor\":%.4f,\"co2\":%d,\"temp\":%.1f,\"humidity\":%.1f,\"leaf\":%.1f,\"vpd\":%.3f,\"vpd_low\":%.2f,\"vpd_high\":%.2f,\"vpd_status\":%d}",
-           safeFloat(latest.lux), safeFloat(latest.ppfd), safeFloat(latest.ppfdFactor), safeInt(latest.co2ppm), safeFloat(latest.ambientTempC),
-           safeFloat(latest.humidity), safeFloat(latest.leafTempC), safeFloat(latest.vpd), safeFloat(latest.vpdTargetLow),
+           safeFloat(latest.lux), safeFloat(latest.ppfd), safeFloat(latest.ppfdFactor),
+           safeInt(latest.co2ppm), safeFloat(latest.ambientTempC),
+           safeFloat(latest.humidity), safeFloat(latest.leafTempC),
+           safeFloat(latest.vpd), safeFloat(latest.vpdTargetLow),
            safeFloat(latest.vpdTargetHigh), latest.vpdStatus);
   server.send(200, "application/json", json);
 }
 
 void handleSettings() {
-  if (!enforceAuth())
-    return;
+  if (!enforceAuth()) return;
+
   if (server.method() == HTTP_GET) {
     String json = "{";
     json += "\"channel\":\"" + lightChannelName() + "\",";
@@ -1375,13 +1359,15 @@ void handleSettings() {
     server.send(400, "text/plain", "vpd_stage missing");
     return;
   }
-  LightChannel next = lightChannelFromString(server.arg("channel"));
-  channel = next;
+
+  channel = lightChannelFromString(server.arg("channel"));
   vpdStageId = server.arg("vpd_stage");
+
   prefs.begin("grow-sensor", false);
   prefs.putString("channel", lightChannelName());
   prefs.putString("vpd_stage", vpdStageId);
   prefs.end();
+
   server.send(200, "text/plain", "saved");
 }
 
@@ -1390,8 +1376,10 @@ void handleWifiSave() {
     server.send(400, "text/plain", "missing ssid/pass");
     return;
   }
+
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
+
   bool staticFlag = server.hasArg("static") && server.arg("static") == "1";
   IPAddress ip, gw, sn;
   if (staticFlag) {
@@ -1401,12 +1389,14 @@ void handleWifiSave() {
   }
 
   saveWifiCredentials(ssid, pass);
+
   prefs.begin("grow-sensor", false);
   prefs.putBool("static", staticFlag);
   prefs.putString("ip", ip.toString());
   prefs.putString("gw", gw.toString());
   prefs.putString("sn", sn.toString());
   prefs.end();
+
   staticIpEnabled = staticFlag;
   staticIp = ip;
   staticGateway = gw;
@@ -1414,9 +1404,14 @@ void handleWifiSave() {
 
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);
-  if (staticIpEnabled && staticIp != IPAddress((uint32_t)0) && staticGateway != IPAddress((uint32_t)0) && staticSubnet != IPAddress((uint32_t)0)) {
+
+  if (staticIpEnabled &&
+      staticIp != IPAddress((uint32_t)0) &&
+      staticGateway != IPAddress((uint32_t)0) &&
+      staticSubnet != IPAddress((uint32_t)0)) {
     WiFi.config(staticIp, staticGateway, staticSubnet);
   }
+
   WiFi.begin(ssid.c_str(), pass.c_str());
 
   unsigned long start = millis();
@@ -1435,8 +1430,7 @@ void handleWifiSave() {
 }
 
 void handleReset() {
-  if (!enforceAuth())
-    return;
+  if (!enforceAuth()) return;
   clearPreferences();
   server.send(200, "text/plain", "cleared");
   delay(200);
@@ -1444,48 +1438,49 @@ void handleReset() {
 }
 
 void handleNetworks() {
-  if (!enforceAuth())
-    return;
+  if (!enforceAuth()) return;
+
   int n = WiFi.scanNetworks();
   String json = "{\"networks\":[";
   for (int i = 0; i < n; i++) {
     json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
-    if (i < n - 1)
-      json += ",";
+    if (i < n - 1) json += ",";
   }
   json += "]}";
   server.send(200, "application/json", json);
 }
 
 void handleSensorsApi() {
-  if (!enforceAuth())
-    return;
+  if (!enforceAuth()) return;
+
   if (server.method() == HTTP_POST) {
     if (!server.hasArg("id")) {
       server.send(400, "text/plain", "missing id");
       return;
     }
-    // Only Admin user can modify partners
-    if (adminUser != DEFAULT_USER || adminPass.isEmpty()) {
-      // still allow default Admin user (but require auth already)
-    }
+
     String id = server.arg("id");
+
     if (id == "replace") {
       if (!server.hasArg("from") || !server.hasArg("to") || !server.hasArg("category")) {
         server.send(400, "text/plain", "missing replace args");
         return;
       }
+
       SensorSlot *src = findSensor(server.arg("from"));
       if (!src) {
         server.send(404, "text/plain", "source not found");
         return;
       }
+
+      // disable old
       src->enabled = false;
       if (src->enabledFlag) *(src->enabledFlag) = false;
       if (src->health) {
         src->health->healthy = false;
         src->health->enabled = false;
       }
+
       SensorSlot replacement;
       replacement.id = server.arg("to");
       replacement.type = server.hasArg("type") ? server.arg("type") : src->type;
@@ -1493,6 +1488,7 @@ void handleSensorsApi() {
       replacement.enabled = true;
       replacement.present = true;
       replacement.healthy = false;
+
       if (replacement.category == "light") {
         replacement.enabledFlag = &enableLight;
         replacement.health = &lightHealth;
@@ -1506,24 +1502,34 @@ void handleSensorsApi() {
         replacement.enabledFlag = &enableCo2;
         replacement.health = &co2Health;
       }
+
       if (replacement.enabledFlag) *(replacement.enabledFlag) = true;
       sensors.push_back(replacement);
+
       if (replacement.category == "climate") {
         climateType = climateFromString(replacement.type);
+        prefs.begin("grow-sensor", false);
+        prefs.putString("climate_type", climateSensorName(climateType));
+        prefs.end();
         reinitClimateSensor();
       } else if (replacement.category == "co2") {
         co2Type = co2FromString(replacement.type);
+        prefs.begin("grow-sensor", false);
+        prefs.putString("co2_type", co2SensorName(co2Type));
+        prefs.end();
         reinitCo2Sensor();
       } else if (replacement.category == "light") {
         reinitLightSensor();
       } else if (replacement.category == "leaf") {
         reinitLeafSensor();
       }
+
       persistSensorFlags();
       rebuildSensorList();
       server.send(200, "text/plain", "replaced");
       return;
     }
+
     if (id == "climate_type" && server.hasArg("value")) {
       climateType = climateFromString(server.arg("value"));
       prefs.begin("grow-sensor", false);
@@ -1534,6 +1540,7 @@ void handleSensorsApi() {
       server.send(200, "text/plain", "saved");
       return;
     }
+
     if (id == "co2_type" && server.hasArg("value")) {
       co2Type = co2FromString(server.arg("value"));
       prefs.begin("grow-sensor", false);
@@ -1544,22 +1551,26 @@ void handleSensorsApi() {
       server.send(200, "text/plain", "saved");
       return;
     }
+
     if (!server.hasArg("enabled")) {
       server.send(400, "text/plain", "missing enabled");
       return;
     }
+
     bool flag = server.arg("enabled") == "1";
     SensorSlot *target = findSensor(id);
     if (!target) {
       server.send(404, "text/plain", "not found");
       return;
     }
+
     if (target->enabledFlag) *(target->enabledFlag) = flag;
     if (target->health) {
       target->health->healthy = false;
       target->health->enabled = flag;
       target->health->lastUpdate = 0;
     }
+
     if (flag) {
       if (target->category == "light") reinitLightSensor();
       else if (target->category == "climate") reinitClimateSensor();
@@ -1571,6 +1582,7 @@ void handleSensorsApi() {
       if (target->category == "leaf") { latest.leafTempC = NAN; }
       if (target->category == "co2") { latest.co2ppm = -1; }
     }
+
     persistSensorFlags();
     rebuildSensorList();
     server.send(200, "text/plain", "saved");
@@ -1580,10 +1592,18 @@ void handleSensorsApi() {
   String json = "{\"sensors\":[";
   for (size_t i = 0; i < sensors.size(); i++) {
     const auto &s = sensors[i];
-    bool healthy = s.health ? s.health->healthy : s.healthy;
-    json += "{\"id\":\"" + s.id + "\",\"name\":\"" + s.type + "\",\"category\":\"" + s.category + "\",\"enabled\":" + String((s.enabledFlag ? *s.enabledFlag : s.enabled) ? 1 : 0) + ",\"healthy\":" + String(healthy ? 1 : 0) + ",\"present\":" + String((s.health ? s.health->present : s.present) ? 1 : 0) + "}";
+    bool enabled = (s.enabledFlag ? *s.enabledFlag : s.enabled);
+    bool healthy = (s.health ? s.health->healthy : s.healthy);
+    bool present = (s.health ? s.health->present : s.present);
+
+    json += "{\"id\":\"" + s.id + "\",\"name\":\"" + s.type + "\",\"category\":\"" + s.category +
+            "\",\"enabled\":" + String(enabled ? 1 : 0) +
+            ",\"healthy\":" + String(healthy ? 1 : 0) +
+            ",\"present\":" + String(present ? 1 : 0) + "}";
+
     if (i < sensors.size() - 1) json += ",";
   }
+
   json += "],";
   json += "\"climate_type\":\"" + climateSensorName(climateType) + "\",";
   json += "\"co2_type\":\"" + co2SensorName(co2Type) + "\"";
@@ -1592,34 +1612,90 @@ void handleSensorsApi() {
 }
 
 void handleLogs() {
-  if (!enforceAuth())
-    return;
+  if (!enforceAuth()) return;
+
   String json = "[";
   for (size_t i = 0; i < logCount; i++) {
     size_t idx = (logStart + i) % LOG_CAPACITY;
-    json += "\"" + logBuffer[idx] + "\"";
-    if (i < logCount - 1)
-      json += ",";
+    String line = logBuffer[idx];
+    line.replace("\\", "\\\\");
+    line.replace("\"", "\\\"");
+    json += "\"" + line + "\"";
+    if (i < logCount - 1) json += ",";
   }
   json += "]";
   server.send(200, "application/json", json);
 }
 
+void handlePartners() {
+  if (!enforceAuth()) return;
+
+  if (server.method() == HTTP_POST) {
+    if (!server.hasArg("id")) {
+      server.send(400, "text/plain", "missing id");
+      return;
+    }
+
+    String id = server.arg("id");
+    Partner *existing = nullptr;
+    for (auto &p : partners) {
+      if (p.id == id) { existing = &p; break; }
+    }
+
+    Partner p = existing ? *existing : Partner();
+    p.id = id;
+    if (server.hasArg("name")) p.name = server.arg("name");
+    if (server.hasArg("description")) p.description = server.arg("description");
+    if (server.hasArg("desc")) p.description = server.arg("desc");
+    if (server.hasArg("url")) p.url = server.arg("url");
+    if (server.hasArg("logo")) p.logo = server.arg("logo");
+    if (server.hasArg("enabled")) p.enabled = server.arg("enabled") == "1";
+
+    if (existing) *existing = p;
+    else partners.push_back(p);
+
+    savePartners();
+    server.send(200, "text/plain", "saved");
+    return;
+  }
+
+  String json = "{\"partners\":[";
+  size_t count = 0;
+  for (size_t i = 0; i < partners.size(); i++) {
+    const auto &p = partners[i];
+    if (!p.enabled) continue;
+    if (count++ > 0) json += ",";
+    json += "{\"id\":\"" + p.id +
+            "\",\"name\":\"" + p.name +
+            "\",\"description\":\"" + p.description +
+            "\",\"url\":\"" + p.url +
+            "\",\"logo\":\"" + p.logo + "\"}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
 void setupServer() {
   server.on("/", HTTP_GET, handleRoot);
+
   server.on("/api/telemetry", HTTP_GET, handleTelemetry);
+
   server.on("/api/settings", HTTP_GET, handleSettings);
   server.on("/api/settings", HTTP_POST, handleSettings);
+
   server.on("/api/wifi", HTTP_POST, handleWifiSave);
   server.on("/api/reset", HTTP_POST, handleReset);
-  server.on("/api/auth", HTTP_POST, handleAuth);
-  server.on("/api/auth/change", HTTP_POST, handleAuthChange);
+
   server.on("/api/networks", HTTP_GET, handleNetworks);
+
   server.on("/api/sensors", HTTP_GET, handleSensorsApi);
   server.on("/api/sensors", HTTP_POST, handleSensorsApi);
+
   server.on("/api/logs", HTTP_GET, handleLogs);
-   server.on("/api/partners", HTTP_GET, handlePartners);
-   server.on("/api/partners", HTTP_POST, handlePartners);
+
+  server.on("/api/partners", HTTP_GET, handlePartners);
+  server.on("/api/partners", HTTP_POST, handlePartners);
+
   server.onNotFound(handleNotFound);
   server.begin();
 }
@@ -1635,12 +1711,12 @@ void setup() {
   initSensors();
   connectToWiFi();
   setupServer();
+
+  logEvent("Boot complete");
 }
 
 void loop() {
-  if (apMode) {
-    dnsServer.processNextRequest();
-  }
+  if (apMode) dnsServer.processNextRequest();
   server.handleClient();
 
   if (millis() - lastSensorMillis >= SENSOR_INTERVAL) {
