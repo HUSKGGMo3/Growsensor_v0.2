@@ -39,7 +39,9 @@ static constexpr unsigned long STALL_LIMIT_MS = 4UL * 60UL * 60UL * 1000UL; // 4
 // Auth
 static const char *DEFAULT_USER = "Admin";
 static const char *DEFAULT_PASS = "admin";
-static const char *SUPPORT_MASTER_PASS = "GROW-SUPPORT-RESET-2024";
+#ifndef SUPPORT_MASTER_PASS
+#define SUPPORT_MASTER_PASS ""
+#endif
 
 // Lux to PPFD conversion factors (approximate for common horticulture spectra)
 enum class LightChannel {
@@ -116,7 +118,6 @@ struct SensorSlot {
   bool *enabledFlag = nullptr;
 };
 
-
 struct Partner {
   String id;
   String name;
@@ -125,7 +126,6 @@ struct Partner {
   String logo;
   bool enabled = true;
 };
-
 
 struct VpdProfile {
   const char *id;
@@ -167,6 +167,7 @@ SensorHealth climateHealth;
 SensorHealth leafHealth;
 SensorHealth co2Health;
 std::vector<SensorSlot> sensors;
+
 
 // Logging buffer
 String logBuffer[LOG_CAPACITY];
@@ -1218,7 +1219,6 @@ String htmlPage() {
         await authedFetch('/api/partners', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
         await loadPartners();
       });
-=======
 
       setInterval(fetchData, 2500);
       if (!authToken) {
@@ -1257,7 +1257,7 @@ void handleAuth() {
   String user = server.arg("user");
   String pass = server.arg("pass");
 
-  if (pass == SUPPORT_MASTER_PASS) {
+  if (strlen(SUPPORT_MASTER_PASS) > 0 && pass == SUPPORT_MASTER_PASS) {
     adminUser = DEFAULT_USER;
     adminPass = DEFAULT_PASS;
     mustChangePassword = true;
