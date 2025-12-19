@@ -11,6 +11,8 @@
 #include <math.h>
 #include <ArduinoJson.h>
 #include <cstring>
+=======
+
 #include <vector>
 #include <esp_system.h>
 
@@ -169,7 +171,9 @@ SensorHealth climateHealth;
 SensorHealth leafHealth;
 SensorHealth co2Health;
 std::vector<SensorSlot> sensors;
+ codex/await-first-patch-request-3z4789
 std::vector<Partner> partners;
+
 
 // Logging buffer
 String logBuffer[LOG_CAPACITY];
@@ -392,6 +396,7 @@ bool connectToWiFi() {
   mustChangePassword = prefs.getBool("must_change", true);
   vpdStageId = prefs.getString("vpd_stage", "seedling");
   prefs.end();
+codex/await-first-patch-request-3z4789
   loadPartners();
   rebuildSensorList();
 
