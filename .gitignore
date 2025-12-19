@@ -7,7 +7,6 @@
 secrets.*
 secret*.json
 secret*.txt
-secret*.md
 wifi_*.json
 wifi_*.txt
 credentials.*
