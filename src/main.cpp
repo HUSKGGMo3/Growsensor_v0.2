@@ -9,7 +9,6 @@
 #include <Adafruit_MLX90614.h>
 #include <MHZ19.h>
 #include <math.h>
-#include <ArduinoJson.h>
 #include <vector>
 #include <esp_system.h>
 
@@ -117,6 +116,7 @@ struct SensorSlot {
   bool *enabledFlag = nullptr;
 };
 
+
 struct Partner {
   String id;
   String name;
@@ -125,6 +125,7 @@ struct Partner {
   String logo;
   bool enabled = true;
 };
+
 
 struct VpdProfile {
   const char *id;
@@ -166,7 +167,6 @@ SensorHealth climateHealth;
 SensorHealth leafHealth;
 SensorHealth co2Health;
 std::vector<SensorSlot> sensors;
-std::vector<Partner> partners;
 
 // Logging buffer
 String logBuffer[LOG_CAPACITY];
@@ -389,7 +389,6 @@ bool connectToWiFi() {
   mustChangePassword = prefs.getBool("must_change", true);
   vpdStageId = prefs.getString("vpd_stage", "seedling");
   prefs.end();
-  loadPartners();
   rebuildSensorList();
 
   if (savedSsid.isEmpty()) {
@@ -1219,6 +1218,7 @@ String htmlPage() {
         await authedFetch('/api/partners', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
         await loadPartners();
       });
+=======
 
       setInterval(fetchData, 2500);
       if (!authToken) {
