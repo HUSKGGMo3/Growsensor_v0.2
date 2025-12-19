@@ -17,10 +17,17 @@
 // ----------------------------
 // Pin and peripheral settings
 // ----------------------------
-static constexpr uint8_t I2C_SDA_PIN = 21;
-static constexpr uint8_t I2C_SCL_PIN = 22;
-static constexpr uint8_t CO2_RX_PIN = 16; // ESP32 RX <- sensor TX
-static constexpr uint8_t CO2_TX_PIN = 17; // ESP32 TX -> sensor RX
+static constexpr int DEFAULT_I2C_SDA_PIN = 21;
+static constexpr int DEFAULT_I2C_SCL_PIN = 22;
+static constexpr int DEFAULT_CO2_RX_PIN = 16; // ESP32 RX <- sensor TX
+static constexpr int DEFAULT_CO2_TX_PIN = 17; // ESP32 TX -> sensor RX
+static constexpr int PIN_MIN = 0;
+static constexpr int PIN_MAX = 39;
+
+int pinI2C_SDA = DEFAULT_I2C_SDA_PIN;
+int pinI2C_SCL = DEFAULT_I2C_SCL_PIN;
+int pinCO2_RX = DEFAULT_CO2_RX_PIN;
+int pinCO2_TX = DEFAULT_CO2_TX_PIN;
 
 // Access point settings
 static const char *AP_SSID = "GrowSensor-Setup";
@@ -300,6 +307,28 @@ void persistSensorFlags() {
   prefs.end();
 }
 
+bool validPin(int pin) { return pin >= PIN_MIN && pin <= PIN_MAX; }
+
+bool pinsValid(int sda, int scl, int co2Rx, int co2Tx) {
+  return validPin(sda) && validPin(scl) && validPin(co2Rx) && validPin(co2Tx) && sda != scl && co2Rx != co2Tx;
+}
+
+void loadPinsFromPrefs() {
+  prefs.begin("grow-sensor", true);
+  pinI2C_SDA = prefs.getInt("i2c_sda", DEFAULT_I2C_SDA_PIN);
+  pinI2C_SCL = prefs.getInt("i2c_scl", DEFAULT_I2C_SCL_PIN);
+  pinCO2_RX = prefs.getInt("co2_rx", DEFAULT_CO2_RX_PIN);
+  pinCO2_TX = prefs.getInt("co2_tx", DEFAULT_CO2_TX_PIN);
+  prefs.end();
+
+  if (!pinsValid(pinI2C_SDA, pinI2C_SCL, pinCO2_RX, pinCO2_TX)) {
+    pinI2C_SDA = DEFAULT_I2C_SDA_PIN;
+    pinI2C_SCL = DEFAULT_I2C_SCL_PIN;
+    pinCO2_RX = DEFAULT_CO2_RX_PIN;
+    pinCO2_TX = DEFAULT_CO2_TX_PIN;
+  }
+}
+
 void logEvent(const String &msg) {
   size_t idx = (logStart + logCount) % LOG_CAPACITY;
   if (logCount == LOG_CAPACITY) {
@@ -499,7 +528,7 @@ void reinitCo2Sensor() {
   co2Health.healthy = false;
   co2Health.enabled = true;
   if (co2Type == Co2SensorType::MHZ19) {
-    co2Serial.begin(9600, SERIAL_8N1, CO2_RX_PIN, CO2_TX_PIN);
+    co2Serial.begin(9600, SERIAL_8N1, pinCO2_RX, pinCO2_TX);
     co2Sensor.begin(co2Serial);
     co2Sensor.autoCalibration(false);
     co2Health.present = true;
@@ -509,7 +538,7 @@ void reinitCo2Sensor() {
 }
 
 void initSensors() {
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.begin(pinI2C_SDA, pinI2C_SCL);
 
   reinitLightSensor();
   Serial.println(lightHealth.present ? "[Sensor] BH1750 initialized" : "[Sensor] BH1750 not detected");
@@ -931,6 +960,32 @@ String htmlPage() {
             <option value="scd41">Sensirion SCD41</option>
           </select>
           <button id="saveTypes" style="margin-top:8px;">Sensortypen speichern</button>
+          <div style="margin-top:16px; padding-top:12px; border-top:1px solid #1f2937;">
+            <h4 style="margin:0 0 6px;">Pins (Advanced)</h4>
+            <p class="sensor-desc" style="margin-top:4px;">Keine Strapping-Pins verwenden. Bereich 0–39.</p>
+            <div class="row">
+              <div>
+                <label for="pinSda">I2C SDA</label>
+                <input id="pinSda" type="number" min="0" max="39" />
+              </div>
+              <div>
+                <label for="pinScl">I2C SCL</label>
+                <input id="pinScl" type="number" min="0" max="39" />
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="pinCo2Rx">CO₂ RX</label>
+                <input id="pinCo2Rx" type="number" min="0" max="39" />
+              </div>
+              <div>
+                <label for="pinCo2Tx">CO₂ TX</label>
+                <input id="pinCo2Tx" type="number" min="0" max="39" />
+              </div>
+            </div>
+            <button id="savePins" style="margin-top:8px;">Pins speichern &amp; Neustart</button>
+            <p id="pinsStatus" class="status" style="margin-top:8px;"></p>
+          </div>
         </section>
       </div>
 
@@ -1203,6 +1258,7 @@ String htmlPage() {
         updateStaticIpVisibility();
         applyWifiState({ wifi_connected: data.connected ? 1 : 0, ap_mode: data.ap_mode ? 1 : 0, ip: data.ip, gw: data.gw, sn: data.sn });
         await loadSensors();
+        await loadPinsConfig();
       }
 
       async function loadSensors() {
@@ -1249,6 +1305,57 @@ String htmlPage() {
         document.getElementById('climateType').value = data.climate_type;
         document.getElementById('co2Type').value = data.co2_type;
       }
+
+      function setPinsStatus(msg, ok) {
+        const el = document.getElementById('pinsStatus');
+        el.textContent = msg || '';
+        el.className = 'status ' + (ok ? 'ok' : 'err');
+      }
+
+      function parsePin(id) {
+        const val = parseInt(document.getElementById(id).value, 10);
+        return Number.isNaN(val) ? -1 : val;
+      }
+
+      function validatePins(sda, scl, rx, tx) {
+        const inRange = (v) => v >= 0 && v <= 39;
+        if (!inRange(sda) || !inRange(scl) || !inRange(rx) || !inRange(tx)) return 'Pins müssen zwischen 0 und 39 liegen';
+        if (sda === scl) return 'SDA und SCL müssen unterschiedlich sein';
+        if (rx === tx) return 'CO₂ RX und TX müssen unterschiedlich sein';
+        return '';
+      }
+
+      async function loadPinsConfig() {
+        const res = await authedFetch('/api/pins');
+        const data = await res.json();
+        document.getElementById('pinSda').value = data.sda ?? data.default_sda;
+        document.getElementById('pinScl').value = data.scl ?? data.default_scl;
+        document.getElementById('pinCo2Rx').value = data.co2_rx ?? data.default_co2_rx;
+        document.getElementById('pinCo2Tx').value = data.co2_tx ?? data.default_co2_tx;
+        setPinsStatus('', true);
+      }
+
+      document.getElementById('savePins').addEventListener('click', async () => {
+        const sda = parsePin('pinSda');
+        const scl = parsePin('pinScl');
+        const rx = parsePin('pinCo2Rx');
+        const tx = parsePin('pinCo2Tx');
+        const err = validatePins(sda, scl, rx, tx);
+        if (err) { setPinsStatus(err, false); return; }
+        setPinsStatus('Speichere, Gerät startet neu...', true);
+        const body = new URLSearchParams();
+        body.set('sda', sda);
+        body.set('scl', scl);
+        body.set('co2_rx', rx);
+        body.set('co2_tx', tx);
+        const res = await authedFetch('/api/pins', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: body.toString() });
+        if (res.ok) {
+          setPinsStatus('Gespeichert, Neustart wird ausgeführt...', true);
+        } else {
+          const text = await res.text();
+          setPinsStatus(text || 'Fehler beim Speichern', false);
+        }
+      });
 
       async function scanNetworks() {
         document.getElementById('wifiStatus').textContent = 'Suche Netzwerke...';
@@ -1545,6 +1652,56 @@ void handleTelemetry() {
   server.send(200, "application/json", json);
 }
 
+void handlePins() {
+  if (!enforceAuth())
+    return;
+  if (server.method() == HTTP_GET) {
+    String json = "{";
+    json += "\"sda\":" + String(pinI2C_SDA) + ",";
+    json += "\"scl\":" + String(pinI2C_SCL) + ",";
+    json += "\"co2_rx\":" + String(pinCO2_RX) + ",";
+    json += "\"co2_tx\":" + String(pinCO2_TX) + ",";
+    json += "\"default_sda\":" + String(DEFAULT_I2C_SDA_PIN) + ",";
+    json += "\"default_scl\":" + String(DEFAULT_I2C_SCL_PIN) + ",";
+    json += "\"default_co2_rx\":" + String(DEFAULT_CO2_RX_PIN) + ",";
+    json += "\"default_co2_tx\":" + String(DEFAULT_CO2_TX_PIN);
+    json += "}";
+    server.send(200, "application/json", json);
+    return;
+  }
+
+  if (!server.hasArg("sda") || !server.hasArg("scl") || !server.hasArg("co2_rx") || !server.hasArg("co2_tx")) {
+    server.send(400, "text/plain", "missing pins");
+    return;
+  }
+  int sda = server.arg("sda").toInt();
+  int scl = server.arg("scl").toInt();
+  int rx = server.arg("co2_rx").toInt();
+  int tx = server.arg("co2_tx").toInt();
+
+  if (!pinsValid(sda, scl, rx, tx)) {
+    server.send(400, "text/plain", "invalid pins");
+    return;
+  }
+
+  prefs.begin("grow-sensor", false);
+  prefs.putInt("i2c_sda", sda);
+  prefs.putInt("i2c_scl", scl);
+  prefs.putInt("co2_rx", rx);
+  prefs.putInt("co2_tx", tx);
+  prefs.end();
+
+  pinI2C_SDA = sda;
+  pinI2C_SCL = scl;
+  pinCO2_RX = rx;
+  pinCO2_TX = tx;
+
+  server.send(200, "text/plain", "saved");
+  logEvent("Pins saved, restarting");
+  delay(200);
+  ESP.restart();
+}
+
 void handleSettings() {
   if (!enforceAuth())
     return;
@@ -1811,6 +1968,8 @@ void setupServer() {
   server.on("/api/networks", HTTP_GET, handleNetworks);
   server.on("/api/sensors", HTTP_GET, handleSensorsApi);
   server.on("/api/sensors", HTTP_POST, handleSensorsApi);
+  server.on("/api/pins", HTTP_GET, handlePins);
+  server.on("/api/pins", HTTP_POST, handlePins);
   server.on("/api/logs", HTTP_GET, handleLogs);
    server.on("/api/partners", HTTP_GET, handlePartners);
    server.on("/api/partners", HTTP_POST, handlePartners);
@@ -1826,6 +1985,7 @@ void setup() {
   delay(200);
   Serial.println("\nGrowSensor booting...");
 
+  loadPinsFromPrefs();
   initSensors();
   connectToWiFi();
   setupServer();
