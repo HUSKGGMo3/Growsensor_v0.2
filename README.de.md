@@ -1,6 +1,6 @@
 # ESP32 Grow Sensor / Monitoring Node (Deutsch)
 
-**Aktuelle Version: v0.2.1 (ungetestet / Community-Preview)**
+**Aktuelle Version: v0.2.2 (ungetestet / Community-Preview)**
 
 Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet Sensordaten, PPFD/VPD-Auswertung, Wi-Fi-Setup und ein Partner/Supporter-Modul. Keine Aktorsteuerung vorhanden.
 
@@ -15,7 +15,7 @@ Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet S
 - Authentifizierung mit Pflicht-Passwortwechsel beim ersten Login.
 - Partner-/Supporter-Modul (lokal gespeichert, in der UI sichtbar).
 
-## UI/UX-Update (v0.2.1 Dashboard)
+## UI/UX-Update (v0.2.x Dashboard)
 - Zwei In-App-Ansichten: **Dashboard** (Standard) und **Sensoren** (Sensorverwaltung) mit clientseitigem Umschalten.
 - Metrik-Kacheln sind voll klickbar; ein Detail-Modal öffnet Live- und 6h-Charts für Lux, PPFD, CO₂, Temp, Luftfeuchte, Leaf und VPD, inkl. Klick-Logging zum Debuggen von Overlays.
 - Sensorkacheln zeigen statusabhängige LEDs je Metrik (grün = gültige Daten, gelb = alt/ungültig, grau = deaktiviert/nicht vorhanden) basierend auf Telemetrie-Flags.
@@ -46,8 +46,13 @@ Leichtgewichtige, reine Monitoring-Firmware für einen ESP32 mit WebUI. Bietet S
    pio device monitor -b 115200
    ```
 
+## Changelog v0.2.2
+- Fix: Charts im Popup zeigen wieder Live- und 6h-Daten für alle Sensoren.
+- Neu: VPD-Heatmap-Chart im Stil gängiger VPD-Tabellen (klein & groß).
+- Verbesserung: Popup-Graph-UX mit klarerer Skalierung und optionalem Dev-Debug.
+
 ## Stabilitätshinweis
-- v0.2.1 ist ungetestet und als Community-Preview gedacht. Nutzung auf eigenes Risiko.
+- v0.2.2 ist ungetestet und als Community-Preview gedacht. Nutzung auf eigenes Risiko.
 
 ## Lizenz
 - Nicht-kommerzielle Open-Source-Lizenz (siehe `LICENSE`). Nutzung, Ansicht, Modifikation und Pull Requests sind erlaubt.

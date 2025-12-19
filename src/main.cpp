@@ -911,11 +911,13 @@ String htmlPage() {
       .pulse { animation:pulse 1.8s ease-in-out infinite; }
       @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(52,211,153,0.45); } 70% { box-shadow:0 0 0 10px rgba(52,211,153,0); } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0); } }
       .hidden { display:none; }
-      .vpd-chart { position:relative; height:180px; border-radius:12px; overflow:hidden; background: linear-gradient(180deg, #7f1d1d 0%, #f97316 20%, #22c55e 55%, #0ea5e9 80%, #1d4ed8 100%); }
-      .vpd-chart::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg, rgba(15,23,42,0.55), rgba(15,23,42,0.1)); pointer-events:none; }
-      .vpd-target { position:absolute; left:0; top:0; bottom:0; background:rgba(34,197,94,0.25); border:1px dashed rgba(34,197,94,0.8); display:none; }
-      .vpd-marker-dot { position:absolute; width:8px; height:8px; border-radius:50%; background:#fbbf24; box-shadow:0 0 0 4px rgba(251,191,36,0.35); display:none; top:50%; transform:translate(-50%, -50%); }
-      .vpd-label { position:absolute; top:8px; right:8px; background:rgba(15,23,42,0.7); padding:4px 8px; border-radius:8px; font-size:0.9rem; }
+      .vpd-chart { position:relative; height:180px; border-radius:12px; overflow:hidden; background:#0b1220; border:1px solid #1f2937; }
+      .vpd-canvas { position:absolute; inset:0; }
+      .vpd-overlay { position:absolute; inset:0; pointer-events:none; display:flex; flex-direction:column; justify-content:space-between; padding:8px; font-size:0.9rem; color:#e2e8f0; }
+      .vpd-legend { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .legend-swatch { width:16px; height:10px; border-radius:4px; display:inline-block; }
+      .vpd-marker { width:12px; height:12px; border-radius:50%; border:2px solid #0f172a; box-shadow:0 0 0 4px rgba(14,165,233,0.35); background:#fbbf24; }
+      .vpd-no-data { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#94a3b8; backdrop-filter:blur(1px); background:rgba(15,23,42,0.65); }
       .sensor-card { border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; background:#0b1220; }
       .sensor-card .row { align-items:flex-start; }
       .sensor-desc { color:#94a3b8; font-size:0.9rem; }
@@ -941,7 +943,7 @@ String htmlPage() {
     <header>
       <div class="header-row">
         <div>
-          <h1>GrowSensor – v0.2.1</h1>
+          <h1>GrowSensor – v0.2.2</h1>
           <div class="hover-hint">Live Monitoring</div>
         </div>
         <div class="header-row" style="gap:10px;">
@@ -996,10 +998,16 @@ String htmlPage() {
           <div class="card-header"><div>VPD (kPa)</div><span class="status-dot" id="vpdDot"></span></div>
           <div class="value" id="vpd">–</div>
           <div id="vpdStatus" style="font-size:0.85rem;margin-top:6px;"></div>
-          <div class="vpd-chart" id="vpdChartBg">
-            <div class="vpd-target" id="vpdTargetZone"></div>
-            <div class="vpd-marker-dot" id="vpdMarkerDot"></div>
-            <div class="vpd-label">0.0 – 2.0 kPa</div>
+          <div class="vpd-chart" id="vpdTileChart">
+            <canvas id="vpdTileCanvas" class="vpd-canvas"></canvas>
+            <div class="vpd-overlay">
+              <div id="vpdTileLegend" class="vpd-legend"></div>
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div id="vpdTileTarget" class="vpd-legend"></div>
+                <div id="vpdTileStatus" style="font-weight:600;"></div>
+              </div>
+            </div>
+            <div id="vpdTileNoData" class="vpd-no-data" style="display:none;">keine Daten</div>
           </div>
           <div class="hover-chart"><canvas class="hover-canvas" data-metric="vpd" width="320" height="140"></canvas></div>
         </article>
@@ -1118,7 +1126,7 @@ String htmlPage() {
         <button id="savePartner">Partner speichern</button>
       </section>
     </main>
-    <footer>Growcontroller v0.2.1 • Sensorgehäuse v0.3</footer>
+    <footer>Growcontroller v0.2.2 • Sensorgehäuse v0.3</footer>
 
     <div id="devModal">
       <div class="card" style="max-width:420px;width:90%;">
@@ -1140,12 +1148,18 @@ String htmlPage() {
           <div id="chartModalTitle">Detailansicht</div>
           <span class="badge" id="chartModalBadge">–</span>
         </div>
-        <div class="modal-tabs">
+        <div class="modal-tabs" id="detailScopeTabs">
           <button id="tabLive" class="active">Live</button>
           <button id="tabLast6h">Letzte 6h</button>
         </div>
         <div style="position:relative;">
+          <div class="modal-tabs" id="vpdViewTabs" style="display:none;">
+            <button id="tabHeatmap" class="active">Heatmap</button>
+            <button id="tabTimeline">Zeitverlauf</button>
+          </div>
+          <canvas id="vpdHeatmap" style="width:100%; height:260px; display:none;"></canvas>
           <canvas id="detailChart" style="width:100%; height:260px;"></canvas>
+          <div id="chartDebugText" class="dev-note" style="display:none; position:absolute; top:8px; left:12px;"></div>
         </div>
       </div>
     </div>
@@ -1199,12 +1213,11 @@ String htmlPage() {
     <script>
       const chartCanvas = document.getElementById('chart');
       const ctx = chartCanvas.getContext('2d');
-      const maxPoints = 288; // 5-min samples for 24h
-      const history = { labels: [], lux: [], co2: [], temp: [], humidity: [], vpd: [] };
-      let lastHistoryPush = 0;
-      const hoverHistory = { lux: [], co2: [], temp: [], humidity: [], leaf: [], vpd: [] };
-      const hoverMax = 720;
-      let lastHoverPush = 0;
+      const metrics = ['lux','co2','temp','humidity','leaf','vpd'];
+      const historyStore = {};
+      metrics.forEach(m => historyStore[m] = { live: [], long: [], agg:{ bucket:-1, sum:0, count:0 } });
+      const maxLivePoints = 240; // ~10 minutes @2.5s
+      const maxLongPoints = 1440; // 24h @1min
       let lastTelemetryAt = 0;
       let devMode = false;
       const DEV_CODE = "Test1234#";
@@ -1212,9 +1225,15 @@ String htmlPage() {
       document.querySelectorAll('.hover-canvas').forEach(c => hoverCanvases[c.dataset.metric] = c.getContext('2d'));
       const detailChartCanvas = document.getElementById('detailChart');
       const detailCtx = detailChartCanvas.getContext('2d');
+      const vpdHeatmapCanvas = document.getElementById('vpdHeatmap');
+      const vpdHeatmapCtx = vpdHeatmapCanvas.getContext('2d');
+      const vpdTileCanvas = document.getElementById('vpdTileCanvas');
+      const vpdTileCtx = vpdTileCanvas.getContext('2d');
       let detailMetric = null;
       let detailMode = 'live';
+      let detailVpdView = 'heatmap';
       let clickDebug = false;
+      let lastVpdTargets = { low: null, high: null };
 
       function authedFetch(url, options = {}) { return fetch(url, options); }
       function flag(val, fallback = false) { if (val === undefined || val === null) return fallback; return val === true || val === 1 || val === "1"; }
@@ -1258,7 +1277,99 @@ String htmlPage() {
         badge.style.color = '#0f172a';
       }
 
+      function resizeCanvas(canvas, ctxTarget) {
+        if (!canvas || !ctxTarget) return;
+        const ratio = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const w = Math.max(1, Math.round(rect.width * ratio));
+        const h = Math.max(1, Math.round(rect.height * ratio));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        ctxTarget.setTransform(ratio,0,0,ratio,0,0);
+        ctxTarget.scale(1/ratio,1/ratio);
+      }
+
+      function recordMetric(metric, value) {
+        if (!historyStore[metric]) return;
+        const now = Date.now();
+        const entry = (typeof value === 'number' && !Number.isNaN(value)) ? value : null;
+        const store = historyStore[metric];
+        store.live.push({ t: now, v: entry });
+        if (store.live.length > maxLivePoints) store.live.shift();
+        const bucket = Math.floor(now / 60000);
+        if (store.agg.bucket !== bucket) {
+          if (store.agg.count > 0) {
+            store.long.push({ t: store.agg.bucket * 60000, v: store.agg.sum / store.agg.count });
+            if (store.long.length > maxLongPoints) store.long.shift();
+          }
+          store.agg.bucket = bucket;
+          store.agg.sum = 0;
+          store.agg.count = 0;
+        }
+        if (entry !== null) {
+          store.agg.sum += entry;
+          store.agg.count += 1;
+        }
+      }
+
+      function finalizeBucket(metric) {
+        const store = historyStore[metric];
+        if (!store || store.agg.count === 0) return;
+        const ts = store.agg.bucket * 60000;
+        const lastEntry = store.long[store.long.length - 1];
+        if (!lastEntry || lastEntry.t !== ts) {
+          store.long.push({ t: ts, v: store.agg.sum / store.agg.count });
+          if (store.long.length > maxLongPoints) store.long.shift();
+        }
+      }
+
+      function getSeriesData(metric, mode) {
+        finalizeBucket(metric);
+        const store = historyStore[metric] || { live: [], long: [] };
+        const source = mode === 'live' ? store.live : store.long;
+        const cap = mode === 'live' ? maxLivePoints : 360;
+        return source.slice(-cap);
+      }
+
+      function collectPaired(mode) {
+        const temps = getSeriesData('temp', mode);
+        const hums = getSeriesData('humidity', mode);
+        const vpds = getSeriesData('vpd', mode);
+        const len = Math.min(temps.length, hums.length, vpds.length);
+        const out = [];
+        for (let i = 0; i < len; i++) {
+          out.push({ temp: temps[temps.length - len + i]?.v, hum: hums[hums.length - len + i]?.v, vpd: vpds[vpds.length - len + i]?.v });
+        }
+        return out.filter(p => p.temp !== null && p.hum !== null && p.vpd !== null);
+      }
+
+      function drawLineChart(canvas, ctxDraw, points) {
+        resizeCanvas(canvas, ctxDraw);
+        ctxDraw.clearRect(0,0,canvas.width, canvas.height);
+        const valid = points.map(p => p.v).filter(v => v !== null);
+        if (!valid.length) return;
+        const maxVal = Math.max(...valid);
+        const minVal = Math.min(...valid);
+        const span = Math.max(maxVal - minVal, 0.0001);
+        ctxDraw.strokeStyle = '#1f2937';
+        for (let i=1;i<5;i++){ const y=(canvas.height/5)*i; ctxDraw.beginPath(); ctxDraw.moveTo(0,y); ctxDraw.lineTo(canvas.width,y); ctxDraw.stroke(); }
+        ctxDraw.strokeStyle = '#22d3ee';
+        ctxDraw.lineWidth = 2;
+        ctxDraw.beginPath();
+        let started=false;
+        points.forEach((pt,i)=>{
+          if (pt.v === null) { started=false; return; }
+          const x = (i/Math.max(points.length-1,1))*canvas.width;
+          const y = canvas.height - ((pt.v-minVal)/span)*canvas.height;
+          if(!started){ctxDraw.moveTo(x,y); started=true;} else {ctxDraw.lineTo(x,y);}
+        });
+        ctxDraw.stroke();
+      }
+
       function drawChart() {
+        resizeCanvas(chartCanvas, ctx);
         ctx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
         const width = chartCanvas.width;
         const height = chartCanvas.height;
@@ -1268,24 +1379,25 @@ String htmlPage() {
           ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
         }
         const series = [
-          { data: history.lux, color: '#22d3ee', label: 'Lux' },
-          { data: history.co2, color: '#f59e0b', label: 'CO₂' },
-          { data: history.temp, color: '#34d399', label: 'Temp' },
-          { data: history.vpd, color: '#a855f7', label: 'VPD' },
+          { metric: 'lux', color: '#22d3ee' },
+          { metric: 'co2', color: '#f59e0b' },
+          { metric: 'temp', color: '#34d399' },
+          { metric: 'vpd', color: '#a855f7' },
         ];
         series.forEach((serie) => {
-          if (!serie.data.length) return;
-          const cleaned = serie.data.filter(v => typeof v === 'number' && !Number.isNaN(v));
-          if (!cleaned.length) return;
-          const maxVal = Math.max(...cleaned);
-          const minVal = Math.min(...cleaned);
+          const data = getSeriesData(serie.metric, '6h');
+          const values = data.map(p => p.v).filter(v => v !== null);
+          if (!values.length) return;
+          const maxVal = Math.max(...values);
+          const minVal = Math.min(...values);
           const span = Math.max(maxVal - minVal, 0.0001);
           ctx.beginPath();
-          serie.data.forEach((val, i) => {
-            if (Number.isNaN(val)) return;
-            const x = (i / Math.max(series[0].data.length - 1, 1)) * width;
-            const y = height - ((val - minVal) / span) * height;
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          let started = false;
+          data.forEach((p, i) => {
+            if (p.v === null) { started=false; return; }
+            const x = (i / Math.max(data.length - 1, 1)) * width;
+            const y = height - ((p.v - minVal) / span) * height;
+            if (!started) { ctx.moveTo(x, y); started=true; } else ctx.lineTo(x, y);
           });
           ctx.strokeStyle = serie.color;
           ctx.lineWidth = 2;
@@ -1293,43 +1405,15 @@ String htmlPage() {
         });
       }
 
-      function pushHistory(obj) {
-        const now = Date.now();
-        if (lastHistoryPush && (now - lastHistoryPush < 300000)) return; // 5 minutes
-        lastHistoryPush = now;
-        history.labels.push(new Date().toLocaleTimeString());
-        history.lux.push(typeof obj.lux === 'number' ? obj.lux : NaN);
-        history.co2.push(typeof obj.co2 === 'number' ? obj.co2 : NaN);
-        history.temp.push(typeof obj.temp === 'number' ? obj.temp : NaN);
-        history.humidity.push(typeof obj.humidity === 'number' ? obj.humidity : NaN);
-        history.vpd.push(typeof obj.vpd === 'number' ? obj.vpd : NaN);
-        Object.keys(history).forEach(key => {
-          if (history[key].length > maxPoints) history[key].shift();
-        });
-        drawChart();
-        updateAverages();
-      }
-
-      function pushHoverHistory(obj) {
-        const now = Date.now();
-        if (lastHoverPush && (now - lastHoverPush < 30000)) return; // 30s
-        lastHoverPush = now;
-        const map = { lux: obj.lux, co2: obj.co2, temp: obj.temp, humidity: obj.humidity, leaf: obj.leaf, vpd: obj.vpd };
-        Object.keys(map).forEach(key => {
-          const val = map[key];
-          const entry = (typeof val === 'number' && !Number.isNaN(val)) ? val : NaN;
-          hoverHistory[key].push(entry);
-          if (hoverHistory[key].length > hoverMax) hoverHistory[key].shift();
-        });
-      }
-
       function drawHover(metric) {
         const ctxHover = hoverCanvases[metric];
         if (!ctxHover) return;
         const canvas = ctxHover.canvas;
-        ctxHover.clearRect(0, 0, canvas.width, canvas.height);
-        const data = hoverHistory[metric] || [];
-        const values = data.filter(v => typeof v === 'number' && !Number.isNaN(v));
+        const data = getSeriesData(metric, '6h');
+        const mapped = data.map(p => p.v);
+        const values = mapped.filter(v => v !== null);
+        resizeCanvas(canvas, ctxHover);
+        ctxHover.clearRect(0,0,canvas.width, canvas.height);
         if (!values.length) return;
         const maxVal = Math.max(...values);
         const minVal = Math.min(...values);
@@ -1337,9 +1421,9 @@ String htmlPage() {
         ctxHover.strokeStyle = '#1f2937';
         ctxHover.lineWidth = 1;
         ctxHover.beginPath();
-        data.forEach((val, i) => {
-          if (Number.isNaN(val)) return;
-          const x = (i / Math.max(data.length - 1, 1)) * canvas.width;
+        mapped.forEach((val, i) => {
+          if (val === null) return;
+          const x = (i / Math.max(mapped.length - 1, 1)) * canvas.width;
           const y = canvas.height - ((val - minVal) / span) * canvas.height;
           if (i === 0) ctxHover.moveTo(x, y); else ctxHover.lineTo(x, y);
         });
@@ -1348,9 +1432,9 @@ String htmlPage() {
         ctxHover.lineWidth = 2;
         ctxHover.beginPath();
         let started = false;
-        data.forEach((val, i) => {
-          if (Number.isNaN(val)) { started = false; return; }
-          const x = (i / Math.max(data.length - 1, 1)) * canvas.width;
+        mapped.forEach((val, i) => {
+          if (val === null) { started = false; return; }
+          const x = (i / Math.max(mapped.length - 1, 1)) * canvas.width;
           const y = canvas.height - ((val - minVal) / span) * canvas.height;
           if (!started) { ctxHover.moveTo(x, y); started = true; }
           else ctxHover.lineTo(x, y);
@@ -1358,54 +1442,24 @@ String htmlPage() {
         ctxHover.stroke();
       }
 
-      function resizeCanvasForDpi(canvas, ctxTarget) {
-        const ratio = window.devicePixelRatio || 1;
-        const w = canvas.clientWidth * ratio;
-        const h = canvas.clientHeight * ratio;
-        if (canvas.width !== w || canvas.height !== h) {
-          canvas.width = w;
-          canvas.height = h;
-        }
-        ctxTarget.scale(1,1); // ensure context valid
-      }
-
-      function getSeriesData(metric, mode) {
-        const source = hoverHistory[metric] || [];
-        if (mode === 'live') {
-          return source.slice(-30);
-        }
-        // last 6h ~72 samples (5min) fallback to available
-        return source.slice(-72);
-      }
-
       function drawDetailChart(metric, mode) {
         if (!detailCtx || !metric) return;
-        resizeCanvasForDpi(detailChartCanvas, detailCtx);
-        const canvas = detailChartCanvas;
         const data = getSeriesData(metric, mode);
-        detailCtx.clearRect(0,0,canvas.width, canvas.height);
-        const filtered = data.filter(v => typeof v === 'number' && !Number.isNaN(v));
-        if (!filtered.length) return;
-        const maxVal = Math.max(...filtered);
-        const minVal = Math.min(...filtered);
-        const span = Math.max(maxVal - minVal, 0.0001);
-        detailCtx.strokeStyle = '#1f2937';
-        for (let i=1;i<5;i++){ const y=(canvas.height/5)*i; detailCtx.beginPath(); detailCtx.moveTo(0,y); detailCtx.lineTo(canvas.width,y); detailCtx.stroke(); }
-        detailCtx.strokeStyle = '#22d3ee';
-        detailCtx.lineWidth = 2;
-        detailCtx.beginPath();
-        let started=false;
-        data.forEach((val,i)=>{
-          if (Number.isNaN(val)) { started=false; return; }
-          const x = (i/Math.max(data.length-1,1))*canvas.width;
-          const y = canvas.height - ((val-minVal)/span)*canvas.height;
-          if(!started){detailCtx.moveTo(x,y); started=true;} else {detailCtx.lineTo(x,y);}
-        });
-        detailCtx.stroke();
+        drawLineChart(detailChartCanvas, detailCtx, data);
+        const debugBox = document.getElementById('chartDebugText');
+        if (devMode) {
+          const values = data.map(p => p.v).filter(v => v !== null);
+          const min = values.length ? Math.min(...values).toFixed(2) : '–';
+          const max = values.length ? Math.max(...values).toFixed(2) : '–';
+          debugBox.textContent = `points: ${values.length} / ${data.length} • min ${min} • max ${max}`;
+          debugBox.style.display = 'block';
+        } else {
+          debugBox.style.display = 'none';
+        }
       }
 
       function avg(arr) {
-        const filtered = arr.filter(v => typeof v === 'number' && !Number.isNaN(v));
+        const filtered = arr.map(p => p.v).filter(v => v !== null);
         if (!filtered.length) return NaN;
         return filtered.reduce((a,b)=>a+b,0) / filtered.length;
       }
@@ -1414,43 +1468,102 @@ String htmlPage() {
         const set = (id, val, digits=1) => {
           document.getElementById(id).textContent = Number.isNaN(val) ? '–' : val.toFixed(digits);
         };
-        set('avgLux', avg(history.lux));
-        set('avgCo2', avg(history.co2), 0);
-        set('avgTemp', avg(history.temp));
-        set('avgHum', avg(history.humidity));
-        set('avgVpd', avg(history.vpd), 3);
+        set('avgLux', avg(getSeriesData('lux','6h')));
+        set('avgCo2', avg(getSeriesData('co2','6h')), 0);
+        set('avgTemp', avg(getSeriesData('temp','6h')));
+        set('avgHum', avg(getSeriesData('humidity','6h')));
+        set('avgVpd', avg(getSeriesData('vpd','6h')), 3);
       }
 
-      function updateVpdBar(low, high, value) {
-        const target = document.getElementById('vpdTargetZone');
-        const marker = document.getElementById('vpdMarkerDot');
-        const min = 0.0, max = 2.0;
-        const clamp = (v) => Math.min(max, Math.max(min, v ?? min));
-        const l = clamp(low ?? 0);
-        const h = clamp(high ?? 0);
-        const left = ((l - min) / (max - min)) * 100;
-        const right = ((h - min) / (max - min)) * 100;
-        target.style.left = `${left}%`;
-        target.style.width = `${Math.max(right - left, 0)}%`;
-        target.style.display = 'block';
-        if (typeof value === 'number' && !Number.isNaN(value)) {
-          const v = clamp(value);
-          marker.style.left = `${((v - min) / (max - min)) * 100}%`;
-          marker.style.display = 'block';
-        } else {
-          marker.style.display = 'none';
+      function vpdColor(vpd) {
+        if (vpd === null || Number.isNaN(vpd)) return 'rgba(15,23,42,0)';
+        const stops = [
+          { v: 0.0, c: [59,130,246] },
+          { v: 0.6, c: [34,197,94] },
+          { v: 1.1, c: [234,179,8] },
+          { v: 1.6, c: [248,113,113] },
+        ];
+        const clamp = Math.min(Math.max(vpd, 0), 2.0);
+        let idx = stops.findIndex(s => clamp <= s.v);
+        if (idx <= 0) return `rgb(${stops[0].c.join(',')})`;
+        const a = stops[idx-1], b = stops[idx];
+        const t = (clamp - a.v) / (b.v - a.v);
+        const mix = a.c.map((v,i) => Math.round(v + (b.c[i]-v)*t));
+        return `rgb(${mix.join(',')})`;
+      }
+
+      function calcVpd(tempC, humidity) {
+        if (tempC === null || humidity === null) return null;
+        const es = 0.6108 * Math.exp((17.27 * tempC) / (tempC + 237.3));
+        const ea = es * (humidity / 100.0);
+        const vpd = es - ea;
+        if (Number.isNaN(vpd)) return null;
+        return Math.max(0, Math.min(2.5, vpd));
+      }
+
+      function drawVpdHeatmap(ctxDraw, canvas, mode, targets, overlayEl, markerData) {
+        resizeCanvas(canvas, ctxDraw);
+        const w = canvas.width;
+        const h = canvas.height;
+        ctxDraw.clearRect(0,0,w,h);
+        const tempMin = 14, tempMax = 35;
+        const humMin = 30, humMax = 100;
+        const step = 8 * (window.devicePixelRatio || 1);
+        for (let y = 0; y < h; y += step) {
+          const temp = tempMax - (y / h) * (tempMax - tempMin);
+          for (let x = 0; x < w; x += step) {
+            const hum = humMin + (x / w) * (humMax - humMin);
+            const vpd = calcVpd(temp, hum);
+            ctxDraw.fillStyle = vpdColor(vpd);
+            ctxDraw.fillRect(x, y, step, step);
+          }
+        }
+        if (targets && targets.low !== null && targets.high !== null) {
+          ctxDraw.fillStyle = 'rgba(34,197,94,0.18)';
+          const bandTop = ((tempMax - (tempMin+6)) / (tempMax - tempMin)) * h;
+          const bandBottom = h - bandTop;
+          const lowX = ((Math.max(humMin, targets.low*50) - humMin)/(humMax - humMin))*w;
+          const highX = ((Math.min(humMax, targets.high*50) - humMin)/(humMax - humMin))*w;
+          ctxDraw.fillRect(Math.min(lowX, highX), bandTop, Math.abs(highX-lowX), bandBottom-bandTop);
+        }
+        const points = markerData || [];
+        points.forEach((pt, idx) => {
+          const x = ((pt.hum - humMin) / (humMax - humMin)) * w;
+          const y = (1 - (pt.temp - tempMin) / (tempMax - tempMin)) * h;
+          ctxDraw.fillStyle = idx === points.length -1 ? '#fbbf24' : 'rgba(14,165,233,0.6)';
+          ctxDraw.strokeStyle = '#0f172a';
+          ctxDraw.lineWidth = 2;
+          ctxDraw.beginPath();
+          ctxDraw.arc(x, y, idx === points.length -1 ? 6 : 4, 0, Math.PI*2);
+          ctxDraw.fill();
+          ctxDraw.stroke();
+        });
+        if (overlayEl) {
+          const legend = overlayEl.querySelector('.vpd-legend');
+          if (legend) {
+            legend.innerHTML = `
+              <span class="legend-swatch" style="background:${vpdColor(0.3)}"></span>niedrig
+              <span class="legend-swatch" style="background:${vpdColor(0.9)}"></span>ideal
+              <span class="legend-swatch" style="background:${vpdColor(1.5)}"></span>hoch
+            `;
+          }
         }
       }
 
       function openDetailModal(metric) {
         detailMetric = metric;
         detailMode = 'live';
+        detailVpdView = 'heatmap';
         document.getElementById('chartModalTitle').textContent = `Detailansicht: ${metric.toUpperCase()}`;
         document.getElementById('chartModalBadge').textContent = metric;
         document.getElementById('tabLive').classList.add('active');
         document.getElementById('tabLast6h').classList.remove('active');
+        const showVpd = metric === 'vpd';
+        document.getElementById('vpdViewTabs').style.display = showVpd ? 'flex' : 'none';
+        detailChartCanvas.style.display = showVpd ? 'none' : 'block';
+        vpdHeatmapCanvas.style.display = showVpd ? 'block' : 'none';
         setModalVisible(document.getElementById('chartModal'), true);
-        drawDetailChart(metric, detailMode);
+        renderDetail();
       }
 
       function closeDetailModal() {
@@ -1480,7 +1593,7 @@ String htmlPage() {
           else if (status < 0) { statusEl.textContent = 'unter Ziel'; statusEl.style.color = '#f59e0b'; }
           else if (status > 0) { statusEl.textContent = 'über Ziel'; statusEl.style.color = '#f87171'; }
           else { statusEl.textContent = 'im Ziel'; statusEl.style.color = '#34d399'; }
-          updateVpdBar(data.vpd_low, data.vpd_high, vpdOk ? data.vpd : null);
+          lastVpdTargets = { low: data.vpd_low ?? null, high: data.vpd_high ?? null };
           setDot('luxDot', flag(data.lux_ok), flag(data.lux_present), flag(data.lux_enabled, true));
           setDot('ppfdDot', flag(data.lux_ok), flag(data.lux_present), flag(data.lux_enabled, true));
           setDot('co2Dot', flag(data.co2_ok), flag(data.co2_present), flag(data.co2_enabled, true));
@@ -1488,8 +1601,12 @@ String htmlPage() {
           setDot('humidityDot', flag(data.climate_ok), flag(data.climate_present), flag(data.climate_enabled, true));
           setDot('leafDot', flag(data.leaf_ok), flag(data.leaf_present), flag(data.leaf_enabled, true));
           setDot('vpdDot', flag(data.vpd_ok), flag(data.climate_present) && flag(data.leaf_present), flag(data.climate_enabled) || flag(data.leaf_enabled));
-          pushHistory(data);
-          pushHoverHistory(data);
+          metrics.forEach(m => recordMetric(m, data[m]));
+          drawChart();
+          updateAverages();
+          ['lux','co2','temp','humidity','leaf','vpd'].forEach(drawHover);
+          renderVpdTile(data);
+          renderDetail();
           applyWifiState(data);
         } catch (err) {
           console.warn('telemetry failed', err);
@@ -1829,13 +1946,25 @@ String htmlPage() {
         detailMode = 'live';
         document.getElementById('tabLive').classList.add('active');
         document.getElementById('tabLast6h').classList.remove('active');
-        drawDetailChart(detailMetric, detailMode);
+        renderDetail();
       });
       document.getElementById('tabLast6h').addEventListener('click', () => {
         detailMode = '6h';
         document.getElementById('tabLast6h').classList.add('active');
         document.getElementById('tabLive').classList.remove('active');
-        drawDetailChart(detailMetric, detailMode);
+        renderDetail();
+      });
+      document.getElementById('tabHeatmap').addEventListener('click', () => {
+        detailVpdView = 'heatmap';
+        document.getElementById('tabHeatmap').classList.add('active');
+        document.getElementById('tabTimeline').classList.remove('active');
+        renderDetail();
+      });
+      document.getElementById('tabTimeline').addEventListener('click', () => {
+        detailVpdView = 'timeline';
+        document.getElementById('tabTimeline').classList.add('active');
+        document.getElementById('tabHeatmap').classList.remove('active');
+        renderDetail();
       });
 
       function switchView(target) {
@@ -1894,6 +2023,38 @@ String htmlPage() {
           status.className = 'status err';
         }
       });
+
+      function renderDetail() {
+        if (!detailMetric) return;
+        const showHeatmap = detailMetric === 'vpd' && detailVpdView === 'heatmap';
+        vpdHeatmapCanvas.style.display = showHeatmap ? 'block' : 'none';
+        detailChartCanvas.style.display = showHeatmap ? 'none' : 'block';
+        if (showHeatmap) {
+          const points = collectPaired(detailMode);
+          drawVpdHeatmap(vpdHeatmapCtx, vpdHeatmapCanvas, detailMode, lastVpdTargets, document.getElementById('chartModalCard'), points);
+        } else {
+          drawDetailChart(detailMetric, detailMode);
+        }
+      }
+
+      function renderVpdTile(data) {
+        const temp = typeof data.temp === 'number' ? data.temp : null;
+        const hum = typeof data.humidity === 'number' ? data.humidity : null;
+        const vpd = typeof data.vpd === 'number' && !Number.isNaN(data.vpd) ? data.vpd : null;
+        const tileStatus = document.getElementById('vpdTileStatus');
+        const tileNoData = document.getElementById('vpdTileNoData');
+        const points = collectPaired('live').slice(-60);
+        if (temp === null || hum === null || vpd === null || Number.isNaN(temp) || Number.isNaN(hum)) {
+          tileNoData.style.display = 'flex';
+          tileStatus.textContent = 'keine Daten';
+          return;
+        }
+        tileNoData.style.display = 'none';
+        tileStatus.textContent = `VPD ${vpd.toFixed(2)} kPa`;
+        drawVpdHeatmap(vpdTileCtx, vpdTileCanvas, 'live', lastVpdTargets, document.getElementById('vpdTileChart'), points);
+        const targetText = lastVpdTargets.low && lastVpdTargets.high ? `${lastVpdTargets.low.toFixed(2)}–${lastVpdTargets.high.toFixed(2)} kPa` : '–';
+        document.getElementById('vpdTileTarget').innerHTML = `<span class=\"legend-swatch\" style=\"background:${vpdColor(lastVpdTargets.low || 0.8)}\"></span> Ziel ${targetText}`;
+      }
 
       setInterval(fetchData, 2500);
       setDevVisible();
