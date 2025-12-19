@@ -168,7 +168,6 @@ SensorHealth leafHealth;
 SensorHealth co2Health;
 std::vector<SensorSlot> sensors;
 
-
 // Logging buffer
 String logBuffer[LOG_CAPACITY];
 size_t logStart = 0;
