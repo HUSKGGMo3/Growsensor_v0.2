@@ -1,5 +1,3 @@
-# ESP32 Grow Sensor / Monitoring Node
-
 **Current release: v0.2.0 (untested / community preview)**
 
 Lightweight ESP32 monitoring firmware with a WebUI for grow environments. Provides sensor telemetry, PPFD/VPD insights, Wi-Fi setup, and a partner/supporter module. No actuator control is implemented yet.
