@@ -1,4 +1,4 @@
-# Growcontroller v0.1.2 (ESP32)
+# Growcontroller v0.2 (ESP32, untested)
 
 Firmware für das GrowSensor-Gehäuse (ESP32) mit Captive Portal, geschützter Weboberfläche, Sensor-Manager, VPD-Auswertung pro Pflanzenstadium und 24h-Verlaufsdiagrammen.
 
