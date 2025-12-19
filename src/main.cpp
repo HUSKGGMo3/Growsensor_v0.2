@@ -1359,7 +1359,6 @@ void handleAuthChange() {
   String json =
       "{\"token\":\"" + sessionToken + "\",\"mustChange\":0}";
   server.send(200, "application/json", json);
-}
   String newUser = server.hasArg("new_user") ? server.arg("new_user") : adminUser;
   String newPass = server.arg("new_pass");
 
