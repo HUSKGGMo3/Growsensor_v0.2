@@ -2,13 +2,11 @@
 
 **Aktuelle Version: v0.3.3 (experimentell / ungetestet)**
 
-### Patch v0.3.3 (experimentell, Cloud-first + Long-Range-Cloud-Gating)
+### Patch v0.3.3 (experimentell, Cloud-Archiv + Long-Range-Cloud-Gating)
 - Cloud-UI zeigt Connected/Enabled/Recording, letzte Uploads/Errors und nutzt ein Credentials-Accordion, das bei „connected + gespeichert“ automatisch einklappt. Optionales „Login-Daten dauerhaft speichern“ hält Base-URL/User/App-Passwort über Reboots; „Forget credentials“ löscht nur Cloud-Keys.
-- WebDAV-Base-URL muss mit Slash enden (`http://host/remote.php/dav/files/<user>/`). Uploads landen in `/GrowSensor/<deviceId>/(samples|daily|meta|logs)`, und „Sende Test“ führt einen echten PUT-Upload aus.
-- Cloud-first Storage: bei `cloudStorageActive` (enabled + connected + recording) bleiben nur RAM-Puffer + Cloud-Queue, während offline auf lokale 24h-History zurückgefallen wird.
-- Long-Range-Charts (1–4 Monate) sind in UI und API hart an Cloud gebunden; `/api/cloud/daily` proxy’d Daily-Aggregates mit kurzem RAM-Cache und liefert 403, wenn Cloud inaktiv ist.
-- Cloud-Logs landen als Chunk-Dateien unter `/GrowSensor/<deviceId>/logs/chunks/` (ISO | Level | Source | Message) ohne WebDAV-Append.
-- Daily-Aggregates bleiben als JSON pro Tag (`/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json`) mit avg/min/max/last/samples je Metrik; Long-Range-Charts laden per `/api/cloud/daily?sensor=...&from=YYYY-MM-DD&to=YYYY-MM-DD`.
+- WebDAV-Base-URL muss mit Slash enden (`http://host/remote.php/dav/files/<user>/`). Uploads landen in `/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json` plus `/GrowSensor/<deviceId>/meta/TestCloud_<timestamp>.txt` für den Test-Upload.
+- Cloud ist nur Archiv: Live/1h/6h/24h bleiben lokal im RAM, keine Cloud-Logs/Samples, und Tages-Aggregate werden max. einmal pro Tag hochgeladen (nur bei aktivem Recording).
+- Long-Range-Charts (1–4 Monate) sind in UI und API hart an Cloud gebunden; `/api/cloud/daily` holt Daily-Aggregates aus dem WebDAV-Archiv, ohne Live-Polling bei Offline-Cloud.
 - HTTP-only Build deaktiviert TLS zum Flash-Sparen; Nextcloud-WebDAV nutzt `http://` im vertrauenswürdigen LAN. Low-Flash-Builds können mDNS deaktivieren (nutze die IP).
 
 ### Patch v0.3.2 (experimentell, Cloud Primary)

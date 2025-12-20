@@ -2,13 +2,11 @@
 
 **Current release: v0.3.3 (experimental / untested)**
 
-### Patch v0.3.3 (experimental, Cloud-first storage + cloud-gated long charts)
+### Patch v0.3.3 (experimental, Cloud archive-only + cloud-gated long charts)
 - Cloud UI now exposes connected/enabled/recording states, last upload/error timestamps, and wraps credentials in an accordion that auto-collapses when connected + stored. Optional “Login-Daten dauerhaft speichern” keeps base URL/user/app password across reboots; “Forget credentials” clears only cloud keys.
-- WebDAV base URL must end with a slash (`http://host/remote.php/dav/files/<user>/`). Uploads land in `/GrowSensor/<deviceId>/(samples|daily|meta|logs)`, and “Sende Test” performs a real PUT upload.
-- Cloud-first storage mode: when `cloudStorageActive` (enabled + connected + recording) the device keeps only RAM buffers and cloud upload queues, while offline fallback retains local 24h history.
-- Long-range charts (1–4 months) are cloud-gated in both UI and API; `/api/cloud/daily` proxies daily aggregates with short RAM caching and returns 403 when cloud is inactive.
-- Cloud logs are streamed to `/GrowSensor/<deviceId>/logs/chunks/` as timestamped chunk files (ISO | level | source | message), avoiding WebDAV append limitations.
-- Daily aggregates remain JSON per day (`/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json`) with avg/min/max/last/samples for each metric, and long charts request them via `/api/cloud/daily?sensor=...&from=YYYY-MM-DD&to=YYYY-MM-DD`.
+- WebDAV base URL must end with a slash (`http://host/remote.php/dav/files/<user>/`). Uploads land in `/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json` plus `/GrowSensor/<deviceId>/meta/TestCloud_<timestamp>.txt` for the test upload.
+- Cloud usage is archive-only: live/1h/6h/24h buffers stay local in RAM, no cloud logs/samples are uploaded, and daily aggregates upload once per day (only while recording is active).
+- Long-range charts (1–4 months) are cloud-gated in both UI and API; `/api/cloud/daily` pulls daily aggregates from the WebDAV archive and avoids live polling when cloud is offline.
 - HTTP-only builds disable TLS to save flash; Nextcloud WebDAV uses plain `http://` URLs in trusted LANs. Low-flash builds may disable mDNS (use the device IP).
 
 ### Patch v0.3.2 (experimental, Cloud Primary mode)
