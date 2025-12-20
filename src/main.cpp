@@ -1,9 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <DNSServer.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <BH1750.h>
@@ -19,6 +17,14 @@
 #include <vector>
 #include <algorithm>
 #include <esp_system.h>
+
+#ifndef ENABLE_MDNS
+#define ENABLE_MDNS 1
+#endif
+
+#if ENABLE_MDNS
+#include <ESPmDNS.h>
+#endif
 
 // ----------------------------
 // Pin and peripheral settings
@@ -90,6 +96,7 @@ void onTimeSynchronized(uint64_t epochNowMs, uint32_t monotonicNowMs);
 uint64_t mapTimestampToEpochMs(uint32_t monotonicTs);
 uint64_t currentEpochMs();
 String cloudRootPath();
+String normalizeCloudBaseUrl(String url);
 float safeFloat(float v, float fallback = 0.0f);
 int safeInt(int v, int fallback = 0);
 void enqueueCloudJob(const String &path, const String &payload, const String &dayKey,
@@ -314,7 +321,6 @@ struct CloudConfig {
   String password;
   bool enabled = false;
   bool recording = false;
-  bool useTls = true;
   bool persistCredentials = true;
   uint8_t retentionMonths = 1;
 };
@@ -324,7 +330,6 @@ struct CloudStatus {
   bool enabled = false;           // persisted flag
   bool runtimeEnabled = false;    // worker flag
   bool recording = false;
-  bool useTls = true;
   uint64_t lastUploadMs = 0;
   uint64_t lastFailureMs = 0;
   uint64_t lastPingMs = 0;
@@ -632,7 +637,6 @@ void refreshStorageMode(const String &reason = "") {
   cloudStatus.runtimeEnabled = runtimeActive;
   cloudStatus.connected = storageMode == StorageMode::CLOUD_PRIMARY;
   cloudStatus.recording = cloudConfig.recording;
-  cloudStatus.useTls = cloudConfig.useTls;
   cloudStatus.deviceFolder = cloudRootPath();
 }
 
@@ -665,11 +669,7 @@ void markCloudFailure(const String &msg) {
 }
 
 void saveCloudConfig(const String &reason = "config save") {
-  String trimmed = cloudConfig.baseUrl;
-  trimmed.trim();
-  cloudConfig.baseUrl = trimmed;
-  if (cloudConfig.baseUrl.startsWith("http://")) cloudConfig.useTls = false;
-  else if (cloudConfig.baseUrl.startsWith("https://")) cloudConfig.useTls = true;
+  cloudConfig.baseUrl = normalizeCloudBaseUrl(cloudConfig.baseUrl);
   prefsCloud.begin("cloud", false);
   prefsCloud.putBool("persist", cloudConfig.persistCredentials);
   if (cloudConfig.persistCredentials) {
@@ -683,13 +683,11 @@ void saveCloudConfig(const String &reason = "config save") {
   }
   prefsCloud.putBool("enabled", cloudConfig.enabled);
   prefsCloud.putBool("recording", cloudConfig.recording);
-  prefsCloud.putBool("tls", cloudConfig.useTls);
   prefsCloud.putUChar("retention", cloudConfig.retentionMonths);
   prefsCloud.end();
   cloudStatus.enabled = cloudConfig.enabled;
   cloudStatus.runtimeEnabled = cloudConfig.enabled && cloudConfig.baseUrl.length() > 0;
   cloudStatus.recording = cloudConfig.recording;
-  cloudStatus.useTls = cloudConfig.useTls;
   cloudStatus.lastConfigSaveMs = currentEpochMs();
   cloudStatus.lastStateReason = reason;
   cloudStatus.lastStateChangeMs = cloudStatus.lastConfigSaveMs;
@@ -711,15 +709,12 @@ void loadCloudConfig() {
   }
   cloudConfig.enabled = prefsCloud.getBool("enabled", false);
   cloudConfig.recording = prefsCloud.getBool("recording", false);
-  cloudConfig.useTls = prefsCloud.getBool("tls", true);
   cloudConfig.retentionMonths = prefsCloud.getUChar("retention", 1);
   if (cloudConfig.retentionMonths < 1) cloudConfig.retentionMonths = 1;
   if (cloudConfig.retentionMonths > 4) cloudConfig.retentionMonths = 4;
   prefsCloud.end();
+  cloudConfig.baseUrl = normalizeCloudBaseUrl(cloudConfig.baseUrl);
   cloudStatus.enabled = cloudConfig.enabled;
-  if (cloudConfig.baseUrl.startsWith("http://")) cloudConfig.useTls = false;
-  else if (cloudConfig.baseUrl.startsWith("https://")) cloudConfig.useTls = true;
-  cloudStatus.useTls = cloudConfig.useTls;
   cloudStatus.recording = cloudConfig.recording;
   cloudStatus.lastStateReason = "boot load";
   cloudStatus.lastStateChangeMs = currentEpochMs();
@@ -903,13 +898,19 @@ int hourFromEpoch(uint64_t epochMs) {
 }
 
 String safeBaseUrl() {
-  String b = cloudConfig.baseUrl;
-  b.trim();
-  while (b.endsWith("/")) b.remove(b.length() - 1);
-  if (!b.startsWith("http://") && !b.startsWith("https://")) {
-    b = String(cloudConfig.useTls ? "https://" : "http://") + b;
+  return normalizeCloudBaseUrl(cloudConfig.baseUrl);
+}
+
+String normalizeCloudBaseUrl(String url) {
+  url.trim();
+  while (url.endsWith("/")) url.remove(url.length() - 1);
+  if (url.length() == 0) return "";
+  if (url.startsWith("https://")) {
+    url = "http://" + url.substring(strlen("https://"));
+  } else if (!url.startsWith("http://")) {
+    url = "http://" + url;
   }
-  return b;
+  return url;
 }
 
 String cloudDeviceRoot() {
@@ -1047,7 +1048,7 @@ String buildRecordingPayload(uint64_t epochMs) {
   doc["iso"] = isoTimestamp(epochMs);
   doc["deviceId"] = deviceId();
   doc["firmware"] = FIRMWARE_VERSION;
-  doc["mode"] = cloudConfig.useTls ? "https" : "http";
+  doc["mode"] = "http";
   JsonObject net = doc.createNestedObject("net");
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
   net["ssid"] = wifiConnected ? WiFi.SSID() : savedSsid;
@@ -1121,7 +1122,7 @@ void enqueueRecordingEvent(const String &event, const String &reason) {
   doc["iso"] = isoTimestamp(nowEpoch);
   doc["reason"] = reason;
   doc["deviceId"] = deviceId();
-  doc["mode"] = cloudConfig.useTls ? "https" : "http";
+  doc["mode"] = "http";
   String payload;
   serializeJson(doc, payload);
   enqueueCloudJob(path, payload, dayKey, "recording_event", "application/json", false);
@@ -1435,15 +1436,13 @@ String buildCloudUrl(const String &path) {
 bool webdavRequest(const String &method, const String &url, const String &body, const char *contentType, int &code, String *resp = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS) {
   HTTPClient http;
   http.setTimeout(timeoutMs);
-  WiFiClient wifiClient;
-  WiFiClientSecure wifiSecure;
-  WiFiClient *client = &wifiClient;
-  bool tls = cloudConfig.useTls || url.startsWith("https://");
-  if (tls) {
-    wifiSecure.setInsecure();
-    client = &wifiSecure;
+  WiFiClient client;
+  if (url.startsWith("https://")) {
+    code = -1;
+    if (resp) *resp = "HTTPS disabled";
+    return false;
   }
-  if (!http.begin(*client, url)) return false;
+  if (!http.begin(client, url)) return false;
   if (cloudConfig.username.length() > 0) {
     http.setAuthorization(cloudConfig.username.c_str(), cloudConfig.password.c_str());
   }
@@ -1634,7 +1633,7 @@ bool sendCloudTestFile(int &httpCode, size_t &bytesOut, String &pathOut, String 
   body += "ip=" + ip.toString() + "\n";
   body += "ssid=" + (WiFi.status() == WL_CONNECTED ? WiFi.SSID() : savedSsid) + "\n";
   body += "base_url=" + safeBaseUrl() + "\n";
-  body += "mode=" + String(cloudConfig.useTls ? "https" : "http") + "\n";
+  body += "mode=http\n";
   int code = 0;
   String resp;
   bytesOut = body.length();
@@ -1895,6 +1894,7 @@ void startAccessPoint() {
 }
 
 void startMdns() {
+#if ENABLE_MDNS
   if (deviceHostname.isEmpty()) deviceHostname = "growsensor";
   if (!MDNS.begin(deviceHostname.c_str())) {
     logEvent("mDNS start failed");
@@ -1902,6 +1902,7 @@ void startMdns() {
   }
   MDNS.addService("http", "tcp", 80);
   logEvent("mDNS active: " + deviceHostname + ".local");
+#endif
 }
 
 bool beginWifiConnect(const String &ssid, const String &pass, bool waitForResult) {
@@ -2353,10 +2354,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       .status-dot.dot-pulse-slow { animation: dotPulse 4.8s ease-in-out infinite; }
       .status-dot.dot-pulse-idle { animation: dotPulse 7s ease-in-out infinite; }
       @keyframes dotPulse { 0% { box-shadow:0 0 0 0 rgba(52,211,153,0.15); } 70% { box-shadow:0 0 0 12px rgba(52,211,153,0); } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0); } }
-      .status-dot.dot-pulse-fast { animation: dotPulse 2.4s ease-in-out infinite; }
-      .status-dot.dot-pulse-slow { animation: dotPulse 4.8s ease-in-out infinite; }
-      .status-dot.dot-pulse-idle { animation: dotPulse 7s ease-in-out infinite; }
-      @keyframes dotPulse { 0% { box-shadow:0 0 0 0 rgba(52,211,153,0.15); } 70% { box-shadow:0 0 0 12px rgba(52,211,153,0); } 100% { box-shadow:0 0 0 0 rgba(52,211,153,0); } }
       .tile-title { display:flex; align-items:center; gap:8px; }
       .tile-header { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
       .metric-tile { cursor: pointer; position:relative; transition: max-height 220ms ease, transform 180ms ease, opacity 180ms ease, border-color 120ms ease; overflow:hidden; max-height:720px; padding-bottom:48px; }
@@ -2432,7 +2429,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       .wifi-bar.active { background:#22c55e; }
       .reconnect-panel { margin-top:10px; padding:10px; border:1px dashed #334155; border-radius:10px; background:rgba(15,23,42,0.55); }
       .cloud-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; }
-      .cloud-warning { background:#7c2d12; color:#fecdd3; padding:10px; border-radius:10px; border:1px solid #b45309; }
       .cloud-status { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin-top:8px; }
       .cloud-pill { background:#0b1220; border:1px solid #1f2937; border-radius:10px; padding:8px; display:flex; justify-content:space-between; align-items:center; }
       .cloud-credentials { margin-top:10px; border:1px solid #1f2937; border-radius:12px; padding:10px; background:#0b1220; }
@@ -2792,12 +2788,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
       <div id="view-cloud" class="view">
         <section class="card">
-          <h3 style="margin-top:0">Cloud (Nextcloud WebDAV, LAN HTTP)</h3>
-          <p class="hover-hint" id="cloudHttpHint">HTTP (ohne TLS): Zugangsdaten werden unverschlüsselt übertragen. Nur im vertrauenswürdigen LAN nutzen.</p>
+          <h3 style="margin-top:0">Cloud (Nextcloud WebDAV, HTTP)</h3>
           <div class="cloud-grid">
             <div>
               <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="cloudEnabled" style="width:auto;"> Cloud Logging aktivieren</label>
-              <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="cloudHttpToggle" style="width:auto;"> Nextcloud lokal (HTTP, kein TLS)</label>
               <div class="cloud-credentials" id="cloudCredentials">
                 <div class="cloud-credentials-header">
                   <strong>Login-Daten</strong>
@@ -2832,7 +2826,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
               <p id="cloudStatusMsg" class="status" style="margin-top:8px;"></p>
             </div>
             <div>
-              <div class="cloud-warning" id="cloudHttpWarning" style="display:none;">HTTP (ohne TLS): Zugangsdaten werden unverschlüsselt übertragen. Nur im vertrauenswürdigen LAN nutzen.</div>
               <p class="hover-hint" id="cloudPathHint" style="margin:4px 0;">Uploads landen in /GrowSensor/&lt;deviceId&gt;/</p>
               <div class="cloud-status">
                 <div class="cloud-pill"><span>Cloud enabled</span><strong id="cloudEnabledState">–</strong></div>
@@ -3188,7 +3181,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       const timeBadge = getEl('timeBadge');
       const localTimeText = getEl('localTimeText');
       const cloudEnabledToggle = getEl('cloudEnabled');
-      const cloudHttpToggle = getEl('cloudHttpToggle');
       const cloudUrlInput = getEl('cloudUrl');
       const cloudUserInput = getEl('cloudUser');
       const cloudPassInput = getEl('cloudPass');
@@ -3199,7 +3191,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       const cloudEditBtn = getEl('cloudEdit');
       const cloudForgetBtn = getEl('cloudForget');
       const cloudStatusMsg = getEl('cloudStatusMsg');
-      const cloudHttpWarning = getEl('cloudHttpWarning');
       const cloudEnabledState = getEl('cloudEnabledState');
       const cloudRuntimeState = getEl('cloudRuntimeState');
       const cloudRecordingState = getEl('cloudRecordingState');
@@ -3238,7 +3229,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       };
       const metricDataState = {};
       metrics.forEach(m => metricDataState[m] = { ever:false, last:0 });
-      const cloudState = { enabled:false, runtime:false, recording:false, useTls:true, connected:false, persist:true, lastUpload:0, lastPing:0, lastFailure:0, lastTest:0, queue:0, failures:0, lastError:'', lastPath:'', lastReason:'', storageMode:'local_only', deviceFolder:'' };
+      const cloudState = { enabled:false, runtime:false, recording:false, connected:false, persist:true, lastUpload:0, lastPing:0, lastFailure:0, lastTest:0, queue:0, failures:0, lastError:'', lastPath:'', lastReason:'', storageMode:'local_only', deviceFolder:'' };
       const TREND_CONFIG = {
         temp: { window: 8, minDelta: 0.08, strong: 0.35, decimals: 1 },
         humidity: { window: 8, minDelta: 0.4, strong: 1.5, decimals: 1 },
@@ -5424,7 +5415,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         cloudState.enabled = flag(data.enabled);
         cloudState.runtime = data.runtime_enabled === undefined ? cloudState.runtime : flag(data.runtime_enabled);
         cloudState.recording = data.recording === undefined ? cloudState.recording : flag(data.recording);
-        cloudState.useTls = data.use_tls === undefined ? cloudState.useTls : flag(data.use_tls);
         cloudState.persist = data.persist_credentials === undefined ? cloudState.persist : flag(data.persist_credentials, true);
         cloudState.storageMode = typeof data.storage_mode === 'string' ? data.storage_mode : cloudState.storageMode;
         cloudState.connected = flag(data.connected) || cloudState.storageMode === 'cloud_primary';
@@ -5471,9 +5461,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         }
         if (cloudUploadPath) cloudUploadPath.textContent = cloudState.lastPath || '–';
         if (cloudStateReason) cloudStateReason.textContent = cloudState.lastReason || cloudState.storageMode || '–';
-        const httpMode = cloudState.useTls === false || (cloudUrlInput?.value || '').startsWith('http://');
-        if (cloudHttpToggle) cloudHttpToggle.checked = httpMode;
-        if (cloudHttpWarning) cloudHttpWarning.style.display = httpMode ? 'block' : 'none';
         const showLongRanges = cloudState.enabled && cloudState.connected && cloudState.recording;
         const longRangeBlocked = cloudState.enabled && (!cloudState.connected || !cloudState.recording);
         if (cloudChartNotice) {
@@ -5514,9 +5501,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         if (cloudRetentionSelect && data.retention) cloudRetentionSelect.value = String(data.retention);
         if (cloudPassInput) cloudPassInput.value = '';
         if (cloudPersistToggle) cloudPersistToggle.checked = data.persist_credentials !== undefined ? flag(data.persist_credentials, true) : true;
-        const usesHttp = (cloudUrlInput?.value || '').startsWith('http://') || (data.use_tls === 0 || data.use_tls === false);
-        if (cloudHttpToggle) cloudHttpToggle.checked = usesHttp;
-        if (cloudHttpWarning) cloudHttpWarning.style.display = usesHttp ? 'block' : 'none';
       }
 
       async function fetchCloudStatus() {
@@ -5539,14 +5523,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         if (cloudPersistToggle && !enabledOnly) body.set('persist_credentials', cloudPersistToggle.checked ? '1' : '0');
         const enabledVal = cloudEnabledToggle?.checked ? '1' : '0';
         body.set('enabled', enabledVal);
-        body.set('use_tls', cloudHttpToggle?.checked ? '0' : '1');
         body.set('recording', cloudState.recording ? '1' : '0');
         if (cloudRetentionSelect && !enabledOnly) body.set('retention', cloudRetentionSelect.value || '1');
-        const usesHttp = (cloudHttpToggle?.checked === true) || urlVal.startsWith('http://');
-        if (cloudEnabledToggle?.checked && usesHttp) {
-          const ok = confirm('HTTP ohne TLS: Zugangsdaten werden unverschlüsselt übertragen. Fortfahren?');
-          if (!ok) { cloudEnabledToggle.checked = false; return; }
-        }
         try {
           await authedFetch('/api/cloud', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body });
           if (cloudStatusMsg) { cloudStatusMsg.textContent = 'Gespeichert'; cloudStatusMsg.className = 'status ok'; }
@@ -5607,30 +5585,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         fetchCloudStatus();
       }
 
-      function normalizeHttpUi() {
-        const wantsHttp = cloudHttpToggle?.checked === true;
-        if (!cloudUrlInput) {
-          if (cloudHttpWarning) cloudHttpWarning.style.display = wantsHttp ? 'block' : 'none';
-          return;
-        }
-        let val = cloudUrlInput.value || '';
-        if (val && !val.startsWith('http://') && !val.startsWith('https://')) {
-          val = `${wantsHttp ? 'http://' : 'https://'}${val}`;
-        } else if (wantsHttp && val.startsWith('https://')) {
-          val = `http://${val.slice('https://'.length)}`;
-        } else if (!wantsHttp && val.startsWith('http://')) {
-          val = `https://${val.slice('http://'.length)}`;
-        }
-        cloudUrlInput.value = val;
-        if (cloudHttpWarning) cloudHttpWarning.style.display = wantsHttp ? 'block' : 'none';
-      }
-
-      function syncHttpToggleFromUrl() {
-        const usesHttp = (cloudUrlInput?.value || '').startsWith('http://');
-        if (cloudHttpToggle) cloudHttpToggle.checked = usesHttp;
-        if (cloudHttpWarning) cloudHttpWarning.style.display = usesHttp ? 'block' : 'none';
-      }
-
       const toggleWifiFormBtn = getEl('toggleWifiForm');
       if (toggleWifiFormBtn) toggleWifiFormBtn.addEventListener('click', () => {
         wifiFormOpen = !wifiFormOpen;
@@ -5647,8 +5601,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       if (cloudStopBtn) cloudStopBtn.addEventListener('click', () => cloudAction('stop'));
       if (cloudRetryBtn) cloudRetryBtn.addEventListener('click', () => testCloud());
       if (cloudEnabledToggle) cloudEnabledToggle.addEventListener('change', () => saveCloudConfig(true));
-      if (cloudHttpToggle) cloudHttpToggle.addEventListener('change', () => normalizeHttpUi());
-      if (cloudUrlInput) cloudUrlInput.addEventListener('input', () => syncHttpToggleFromUrl());
       if (cloudEditBtn) cloudEditBtn.addEventListener('click', () => {
         cloudCredentialsOverride = true;
         if (cloudCredentials) cloudCredentials.classList.remove('collapsed');
@@ -6177,7 +6129,6 @@ void handleCloud() {
     doc["recording"] = cloudStatus.recording;
     doc["base_url"] = cloudConfig.baseUrl;
     doc["username"] = cloudConfig.username;
-    doc["use_tls"] = cloudConfig.useTls;
     doc["persist_credentials"] = cloudConfig.persistCredentials;
     doc["retention"] = cloudConfig.retentionMonths;
     doc["connected"] = cloudStatus.connected;
@@ -6208,7 +6159,6 @@ void handleCloud() {
     if (server.hasArg("password") && server.arg("password").length() > 0) cloudConfig.password = server.arg("password");
     if (server.hasArg("enabled")) cloudConfig.enabled = server.arg("enabled") == "1";
     if (server.hasArg("recording")) cloudConfig.recording = server.arg("recording") == "1";
-    if (server.hasArg("use_tls")) cloudConfig.useTls = !(server.arg("use_tls") == "0");
     if (server.hasArg("persist_credentials")) cloudConfig.persistCredentials = server.arg("persist_credentials") == "1";
     if (server.hasArg("retention")) {
       int r = server.arg("retention").toInt();
