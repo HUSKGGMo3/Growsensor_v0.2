@@ -346,6 +346,7 @@ struct CloudStatus {
   uint32_t failureCount = 0;
   int lastHttpCode = 0;
   String lastError;
+  String lastErrorSuffix;
   String lastUrl;
   String lastUploadedPath;
   String lastStateReason;
@@ -413,6 +414,7 @@ void logEvent(const String &msg, const String &level = "info", const String &sou
 String deviceId();
 String buildCloudUrl(const String &path);
 bool ensureCollection(const String &path, const char *label);
+bool webdavRequestFollowRedirects(const String &method, const String &url, const String &payload, const char *contentType, int &outCode, String &outLocationShort, String &outBodyShort, String *chainOut = nullptr, bool *redirectedToHttps = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS);
 
 // Sensor toggles (persisted)
 bool enableLight = true;
@@ -661,8 +663,7 @@ void markCloudSuccess(const String &reason = "cloud ok") {
   lastCloudOkEpochMs = currentEpochMs();
   cloudStatus.lastPingMs = lastCloudOkEpochMs;
   cloudStatus.lastError = "";
-  cloudStatus.lastHttpCode = 0;
-  cloudStatus.lastUrl = "";
+  cloudStatus.lastErrorSuffix = "";
   cloudStatus.lastStateReason = reason;
   cloudStatus.lastStateChangeMs = currentEpochMs();
   refreshStorageMode(reason);
@@ -671,6 +672,7 @@ void markCloudSuccess(const String &reason = "cloud ok") {
 void markCloudFailure(const String &msg) {
   lastCloudOkMs = 0;
   cloudStatus.lastError = msg;
+  cloudStatus.lastErrorSuffix = "";
   cloudStatus.failureCount++;
   cloudStatus.lastFailureMs = currentEpochMs();
   cloudStatus.connected = false;
@@ -1455,7 +1457,16 @@ String cloudShortPath(const String &path) {
   return path.startsWith("/") ? path : (String("/") + path);
 }
 
-void setCloudError(const char *op, const String &label, const String &path, int code, const String &detail = "") {
+void setCloudRequestNote(const char *op, const String &label, const String &path, int code, const String &chain, bool httpsRedirected) {
+  cloudStatus.lastHttpCode = code;
+  cloudStatus.lastUrl = cloudShortPath(path);
+  cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+  if (chain.length() > 0) {
+    cloudStatus.lastError = String(op) + " " + label + " -> " + chain;
+  }
+}
+
+void setCloudError(const char *op, const String &label, const String &path, int code, const String &detail = "", const String &suffix = "") {
   cloudStatus.lastHttpCode = code;
   cloudStatus.lastUrl = cloudShortPath(path);
   String msg = String(op) + " " + label + " -> " + String(code);
@@ -1463,9 +1474,10 @@ void setCloudError(const char *op, const String &label, const String &path, int 
   if (detail.length() > 0) msg += String(" ") + detail;
 #endif
   markCloudFailure(msg);
+  cloudStatus.lastErrorSuffix = suffix;
 }
 
-bool webdavRequest(const String &method, const String &url, const String &body, const char *contentType, int &code, String *resp = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS) {
+bool webdavRequest(const String &method, const String &url, const String &body, const char *contentType, int &code, String *resp = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS, String *location = nullptr) {
   HTTPClient http;
   http.setTimeout(timeoutMs);
   WiFiClient client;
@@ -1475,6 +1487,11 @@ bool webdavRequest(const String &method, const String &url, const String &body, 
     return false;
   }
   if (!http.begin(client, url)) return false;
+  if (location) {
+    const char *headers[] = {"Location"};
+    http.collectHeaders(headers, 1);
+    *location = "";
+  }
   if (cloudConfig.username.length() > 0) {
     http.setAuthorization(cloudConfig.username.c_str(), cloudConfig.password.c_str());
   }
@@ -1493,22 +1510,115 @@ bool webdavRequest(const String &method, const String &url, const String &body, 
     if (out.length() > 120) out = out.substring(0, 120);
     *resp = out;
   }
+  if (location) {
+    String loc = http.header("Location");
+    if (loc.length() > 120) loc = loc.substring(0, 120);
+    *location = loc;
+  }
   http.end();
   return code > 0;
+}
+
+String redirectUrlRoot(const String &url) {
+  int schemeIdx = url.indexOf("://");
+  if (schemeIdx < 0) return "";
+  int hostStart = schemeIdx + 3;
+  int slashPos = url.indexOf('/', hostStart);
+  if (slashPos < 0) return url;
+  return url.substring(0, slashPos);
+}
+
+String redirectUrlBase(const String &url) {
+  int slashPos = url.lastIndexOf('/');
+  if (slashPos < 0) return url;
+  return url.substring(0, slashPos + 1);
+}
+
+String resolveRedirectUrl(const String &currentUrl, const String &location) {
+  if (location.startsWith("http")) return location;
+  if (location.startsWith("/")) {
+    String root = redirectUrlRoot(currentUrl);
+    return root.length() > 0 ? root + location : location;
+  }
+  return redirectUrlBase(currentUrl) + location;
+}
+
+bool webdavRequestFollowRedirects(const String &method, const String &url, const String &payload, const char *contentType, int &outCode, String &outLocationShort, String &outBodyShort, String *chainOut, bool *redirectedToHttps, unsigned long timeoutMs) {
+  String currentUrl = url;
+  String chain;
+  bool httpsRedirected = false;
+  int redirectCount = 0;
+  outLocationShort = "";
+  outBodyShort = "";
+  for (;;) {
+    String resp;
+    String location;
+    int code = 0;
+    bool ok = webdavRequest(method, currentUrl, payload, contentType, code, &resp, timeoutMs, &location);
+    outCode = code;
+    outLocationShort = location;
+    outBodyShort = resp;
+    if (!ok) {
+      if (chainOut) *chainOut = chain;
+      if (redirectedToHttps) *redirectedToHttps = httpsRedirected;
+      return false;
+    }
+    if (code == 301 || code == 302 || code == 307 || code == 308) {
+      if (chain.length() > 0) chain += "->";
+      chain += String(code);
+      String loc = location;
+      loc.trim();
+      if (loc.length() == 0) {
+        if (chainOut) *chainOut = chain;
+        if (redirectedToHttps) *redirectedToHttps = httpsRedirected;
+        return false;
+      }
+      if (loc.startsWith("https://")) {
+        httpsRedirected = true;
+        if (chainOut) *chainOut = chain;
+        if (redirectedToHttps) *redirectedToHttps = httpsRedirected;
+        return false;
+      }
+      if (redirectCount >= 3) {
+        if (chainOut) *chainOut = chain + " loop";
+        if (redirectedToHttps) *redirectedToHttps = httpsRedirected;
+        return false;
+      }
+      redirectCount++;
+      currentUrl = resolveRedirectUrl(currentUrl, loc);
+      continue;
+    }
+    if (chain.length() > 0) {
+      chain += "->";
+      chain += String(code);
+    }
+    if (chainOut) *chainOut = chain;
+    if (redirectedToHttps) *redirectedToHttps = httpsRedirected;
+    if (code >= 200 && code < 300) return true;
+    if (method == "MKCOL" && (code == 405 || code == 409)) return true;
+    return false;
+  }
 }
 
 bool ensureCollection(const String &path, const char *label) {
   String url = buildCloudUrl(path);
   int code = 0;
   String resp;
-  bool ok = webdavRequest("MKCOL", url, "", "text/plain", code, &resp);
+  String location;
+  String chain;
+  bool httpsRedirected = false;
+  bool ok = webdavRequestFollowRedirects("MKCOL", url, "", "text/plain", code, location, resp, &chain, &httpsRedirected);
+  setCloudRequestNote("MKCOL", label, path, code, chain, httpsRedirected);
   if (!ok) {
-    setCloudError("MKCOL", label, path, code, resp);
+    if (chain.length() > 0) {
+      markCloudFailure(cloudStatus.lastError);
+      cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+    } else {
+      setCloudError("MKCOL", label, path, code, resp, httpsRedirected ? "redirected-to-https" : "");
+    }
     return false;
   }
-  if (code == 201 || code == 200 || code == 204 || code == 405 || code == 409) return true;
-  setCloudError("MKCOL", label, path, code, resp);
-  return false;
+  return true;
 }
 
 bool pingCloud(bool force = false) {
@@ -1524,28 +1634,36 @@ bool pingCloud(bool force = false) {
   if (url.length() == 0) return false;
   int code = 0;
   String resp;
-  bool ok = webdavRequest("PROPFIND", url, "", "text/plain", code, &resp);
+  String location;
+  String chain;
+  bool httpsRedirected = false;
+  bool ok = webdavRequestFollowRedirects("PROPFIND", url, "", "text/plain", code, location, resp, &chain, &httpsRedirected);
+  setCloudRequestNote("PROPFIND", "base", "/", code, chain, httpsRedirected);
   if (!ok) {
-    setCloudError("PROPFIND", "base", "/", code, resp);
-    return false;
-  }
-  if (code == 401 || code == 403) {
-    setCloudError("PROPFIND", "auth", "/", code, resp);
-    return false;
-  }
-  if (code == 404) {
-    setCloudError("PROPFIND", "base", "/", code, resp);
-    return false;
-  }
-  if (code >= 200 && code < 400) {
-    if (!cloudEnsureFolders("")) {
+    if (chain.length() > 0) {
+      markCloudFailure(cloudStatus.lastError);
+      cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
       return false;
     }
-    markCloudSuccess("cloud ok");
-    return true;
+    if (code == 401 || code == 403) {
+      setCloudError("PROPFIND", "auth", "/", code, resp, httpsRedirected ? "redirected-to-https" : "");
+      return false;
+    }
+    if (code == 404) {
+      setCloudError("PROPFIND", "base", "/", code, resp, httpsRedirected ? "redirected-to-https" : "");
+      return false;
+    }
+    setCloudError("PROPFIND", "base", "/", code, resp, httpsRedirected ? "redirected-to-https" : "");
+    return false;
   }
-  setCloudError("PROPFIND", "base", "/", code, resp);
-  return false;
+  if (!cloudEnsureFolders("")) {
+    return false;
+  }
+  markCloudSuccess("cloud ok");
+  if (chain.length() > 0) {
+    cloudStatus.lastError = String("PROPFIND base -> ") + chain;
+  }
+  return true;
 }
 
 bool testCloudConnection() {
@@ -1602,15 +1720,27 @@ bool uploadCloudJob(const CloudJob &job) {
   int code = 0;
   String resp;
   const char *ctype = job.contentType.length() > 0 ? job.contentType.c_str() : "application/json";
-  bool ok = webdavRequest("PUT", url, job.payload, ctype, code, &resp, CLOUD_TEST_TIMEOUT_MS);
-  if (!ok || (code != 200 && code != 201 && code != 204)) {
-    setCloudError("PUT", "upload", fullPath, code, resp);
+  String location;
+  String chain;
+  bool httpsRedirected = false;
+  bool ok = webdavRequestFollowRedirects("PUT", url, job.payload, ctype, code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("PUT", "upload", fullPath, code, chain, httpsRedirected);
+  if (!ok) {
+    if (chain.length() > 0) {
+      markCloudFailure(cloudStatus.lastError);
+      cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+    } else {
+      setCloudError("PUT", "upload", fullPath, code, resp, httpsRedirected ? "redirected-to-https" : "");
+    }
     return false;
   }
   cloudStatus.lastUploadMs = currentEpochMs();
   cloudStatus.lastUploadedPath = fullPath;
   cloudStatus.lastError = "";
   markCloudSuccess(job.kind.length() > 0 ? job.kind : "upload");
+  if (chain.length() > 0) {
+    cloudStatus.lastError = String("PUT upload -> ") + chain;
+  }
   cloudStatus.queueSize = cloudQueue.size();
   return true;
 }
@@ -1696,17 +1826,29 @@ bool sendCloudTestFile(int &httpCode, size_t &bytesOut, String &pathOut, String 
   int code = 0;
   String resp;
   bytesOut = body.length();
-  bool ok = webdavRequest("PUT", buildCloudUrl(pathOut), body, "text/plain", code, &resp, CLOUD_TEST_TIMEOUT_MS);
+  String location;
+  String chain;
+  bool httpsRedirected = false;
+  bool ok = webdavRequestFollowRedirects("PUT", buildCloudUrl(pathOut), body, "text/plain", code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("PUT", "test", pathOut, code, chain, httpsRedirected);
   httpCode = code;
-  if (ok && (code == 200 || code == 201 || code == 204)) {
+  if (ok) {
     cloudStatus.lastTestMs = currentEpochMs();
     cloudStatus.lastUploadMs = cloudStatus.lastTestMs;
     cloudStatus.lastUploadedPath = pathOut;
     cloudStatus.lastError = "";
     markCloudSuccess("test upload");
+    if (chain.length() > 0) {
+      cloudStatus.lastError = String("PUT test -> ") + chain;
+    }
     return true;
   }
-  setCloudError("PUT", "test", pathOut, code, resp);
+  if (chain.length() > 0) {
+    markCloudFailure(cloudStatus.lastError);
+    cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+  } else {
+    setCloudError("PUT", "test", pathOut, code, resp, httpsRedirected ? "redirected-to-https" : "");
+  }
   errorOut = cloudStatus.lastError;
   return false;
 }
@@ -3299,7 +3441,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       };
       const metricDataState = {};
       metrics.forEach(m => metricDataState[m] = { ever:false, last:0 });
-      const cloudState = { enabled:false, runtime:false, recording:false, connected:false, persist:true, lastUpload:0, lastPing:0, lastFailure:0, lastTest:0, queue:0, failures:0, lastError:'', lastPath:'', lastReason:'', storageMode:'local_only', deviceFolder:'' };
+      const cloudState = { enabled:false, runtime:false, recording:false, connected:false, persist:true, lastUpload:0, lastPing:0, lastFailure:0, lastTest:0, queue:0, failures:0, lastError:'', lastErrorSuffix:'', lastPath:'', lastReason:'', storageMode:'local_only', deviceFolder:'' };
       const TREND_CONFIG = {
         temp: { window: 8, minDelta: 0.08, strong: 0.35, decimals: 1 },
         humidity: { window: 8, minDelta: 0.4, strong: 1.5, decimals: 1 },
@@ -5499,6 +5641,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         cloudState.queue = typeof data.queue_size === 'number' ? data.queue_size : parseInt(data.queue_size || '0', 10);
         cloudState.failures = typeof data.failures === 'number' ? data.failures : parseInt(data.failures || '0', 10);
         cloudState.lastError = data.last_error || '';
+        cloudState.lastErrorSuffix = data.last_error_suffix || '';
         cloudState.lastPath = data.last_uploaded_path || cloudState.lastPath;
         cloudState.lastReason = data.last_state_reason || cloudState.lastReason;
         if (typeof data.device_folder === 'string' && data.device_folder) cloudState.deviceFolder = data.device_folder;
@@ -5545,7 +5688,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
           const reason = !cloudState.connected ? 'Cloud offline' : 'Recording inaktiv';
           cloudStatusMsg.textContent = `${reason} — zeige lokale 24h`;
           cloudStatusMsg.className = 'status err';
-        } else if (cloudStatusMsg && !longRangeBlocked && (cloudStatusMsg.textContent.includes('Cloud offline') || cloudStatusMsg.textContent.includes('Recording inaktiv'))) {
+        } else if (cloudStatusMsg && cloudState.lastErrorSuffix === 'redirected-to-https') {
+          cloudStatusMsg.textContent = 'Server redirected to HTTPS; use HTTPS or fix Nextcloud config.';
+          cloudStatusMsg.className = 'status err';
+        } else if (cloudStatusMsg && !longRangeBlocked && (cloudStatusMsg.textContent.includes('Cloud offline') || cloudStatusMsg.textContent.includes('Recording inaktiv') || cloudStatusMsg.textContent.includes('Server redirected to HTTPS'))) {
           cloudStatusMsg.textContent = '';
           cloudStatusMsg.className = 'status';
         }
@@ -6236,6 +6382,7 @@ void handleCloud() {
     doc["queue_size"] = (uint32_t)cloudQueue.size();
     doc["failures"] = cloudStatus.failureCount;
     doc["last_error"] = cloudStatus.lastError;
+    doc["last_error_suffix"] = cloudStatus.lastErrorSuffix;
     doc["last_http_code"] = cloudStatus.lastHttpCode;
     doc["last_url"] = cloudStatus.lastUrl;
     doc["last_state_reason"] = cloudStatus.lastStateReason;
