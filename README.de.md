@@ -10,6 +10,7 @@
 - Neuer Endpunkt `/api/cloud/test` + UI-Button „Sende Test“ legt `TestCloud_<deviceId>_<timestamp>.txt` per MKCOL/PUT unter `/GrowSensor/<deviceId>/` ab und liefert HTTP-Code/Pfad/Bytes als End-to-End-Nachweis.
 - Nextcloud HTTP/HTTPS Toggle (`use_tls`): Option „Nextcloud lokal (HTTP, kein TLS)“ nutzt `WiFiClient` ohne TLS-Warnungen, erkennt Schemes automatisch, zeigt den Upload-Root `/GrowSensor/<deviceId>/` in der UI und hält das Enable-Flag dauerhaft stabil (auch nach Reboot).
 - Hotfix v0.3.2: Fehlende Deklarationen/Helper im Cloud-Recording-Pfad ergänzt; Build läuft wieder durch.
+- Hotfix v0.3.2a: ArduinoJson-Null-Zuweisungen korrigiert und doppelte Default-Argumente entfernt; Build läuft wieder durch.
 
 ### Patch v0.3.1 (experimentell, HTTP-only im LAN)
 - Neuer **Cloud**-Tab (für alle sichtbar) zum Konfigurieren von Nextcloud-WebDAV-Logging im lokalen LAN über HTTP. Credentials werden im eigenen `cloud`-Namespace gespeichert, Wi-Fi/Settings bleiben unangetastet. Test/Start/Stop-Buttons, Queue-/Fehler-Zähler und Retention-Auswahl (1–4 Monate) sind integriert; bei HTTP erscheint ein deutlicher Hinweis/Confirm (Klartext-Übertragung).

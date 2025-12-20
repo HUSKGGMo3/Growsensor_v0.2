@@ -1018,13 +1018,41 @@ String buildRecordingPayload(uint64_t epochMs) {
   net["ip"] = (wifiConnected ? WiFi.localIP() : WiFi.softAPIP()).toString();
   net["ap_mode"] = apMode;
   JsonObject metrics = doc.createNestedObject("metrics");
-  metrics["lux"] = isfinite(latest.lux) ? latest.lux : nullptr;
-  metrics["ppfd"] = isfinite(latest.ppfd) ? latest.ppfd : nullptr;
-  metrics["temp"] = isfinite(latest.ambientTempC) ? latest.ambientTempC : nullptr;
-  metrics["humidity"] = isfinite(latest.humidity) ? latest.humidity : nullptr;
-  metrics["leaf"] = isfinite(latest.leafTempC) ? latest.leafTempC : nullptr;
-  metrics["co2"] = (latest.co2ppm >= 0) ? latest.co2ppm : nullptr;
-  metrics["vpd"] = isfinite(latest.vpd) ? latest.vpd : nullptr;
+  if (isfinite(latest.lux)) {
+    metrics["lux"] = latest.lux;
+  } else {
+    metrics["lux"] = nullptr;
+  }
+  if (isfinite(latest.ppfd)) {
+    metrics["ppfd"] = latest.ppfd;
+  } else {
+    metrics["ppfd"] = nullptr;
+  }
+  if (isfinite(latest.ambientTempC)) {
+    metrics["temp"] = latest.ambientTempC;
+  } else {
+    metrics["temp"] = nullptr;
+  }
+  if (isfinite(latest.humidity)) {
+    metrics["humidity"] = latest.humidity;
+  } else {
+    metrics["humidity"] = nullptr;
+  }
+  if (isfinite(latest.leafTempC)) {
+    metrics["leaf"] = latest.leafTempC;
+  } else {
+    metrics["leaf"] = nullptr;
+  }
+  if (latest.co2ppm >= 0) {
+    metrics["co2"] = latest.co2ppm;
+  } else {
+    metrics["co2"] = nullptr;
+  }
+  if (isfinite(latest.vpd)) {
+    metrics["vpd"] = latest.vpd;
+  } else {
+    metrics["vpd"] = nullptr;
+  }
   String payload;
   serializeJson(doc, payload);
   return payload;
@@ -1063,7 +1091,7 @@ void enqueueRecordingEvent(const String &event, const String &reason) {
   enqueueCloudJob(path, payload, dayKey, "recording_event", "application/json", false);
 }
 
-void enqueueCloudJob(const String &path, const String &payload, const String &dayKey, const String &kind = "generic", const String &contentType = "application/json", bool replaceByPath = true) {
+void enqueueCloudJob(const String &path, const String &payload, const String &dayKey, const String &kind, const String &contentType, bool replaceByPath) {
   if (!cloudConfig.enabled || cloudConfig.baseUrl.length() == 0 || payload.length() == 0) return;
   String finalPath = path.startsWith("/") ? path : (String("/") + path);
   for (auto &job : cloudQueue) {
@@ -1179,8 +1207,8 @@ void pushHistoryValue(const char *metric, float value, uint64_t ts) {
   }
 }
 
-float safeFloat(float v, float fallback = 0.0f) { return isfinite(v) ? v : fallback; }
-int safeInt(int v, int fallback = 0) { return v < 0 ? fallback : v; }
+float safeFloat(float v, float fallback) { return isfinite(v) ? v : fallback; }
+int safeInt(int v, int fallback) { return v < 0 ? fallback : v; }
 
 float currentPpfdFactor() {
   return luxToPPFD(1.0f, channel);
