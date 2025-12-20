@@ -658,28 +658,28 @@ bool cloudHealthOk() {
   return millis() - lastCloudOkMs <= CLOUD_HEALTH_WINDOW_MS;
 }
 
-bool cloudStorageActive() {
-  return cloudConfig.enabled && cloudConfig.recording && cloudHealthOk();
+bool cloudConnected() {
+  return cloudConfig.enabled && cloudConfig.baseUrl.length() > 0 && cloudHealthOk();
+}
+
+bool cloudArchiveActive() {
+  return cloudConnected() && cloudConfig.recording;
 }
 
 bool cloudLoggingActive() {
-  return cloudConfig.enabled && cloudHealthOk();
+  return false;
 }
 
 void refreshStorageMode(const String &reason = "") {
   bool runtimeActive = cloudConfig.enabled && cloudConfig.baseUrl.length() > 0;
-  StorageMode next = StorageMode::LOCAL_ONLY;
-  if (runtimeActive) {
-    next = cloudHealthOk() ? StorageMode::CLOUD_PRIMARY : StorageMode::LOCAL_FALLBACK;
-  }
-  if (storageMode != next && reason.length() > 0) {
+  if (reason.length() > 0) {
     cloudStatus.lastStateReason = reason;
     cloudStatus.lastStateChangeMs = currentEpochMs();
   }
-  storageMode = next;
+  storageMode = StorageMode::LOCAL_ONLY;
   cloudStatus.enabled = cloudConfig.enabled;
   cloudStatus.runtimeEnabled = runtimeActive;
-  cloudStatus.connected = storageMode == StorageMode::CLOUD_PRIMARY;
+  cloudStatus.connected = runtimeActive && cloudHealthOk();
   cloudStatus.recording = cloudConfig.recording;
   cloudStatus.deviceFolder = cloudRootPath();
 }
@@ -792,7 +792,6 @@ void setRecordingActive(bool active, const String &reason) {
 }
 
 void persistDailyHistory() {
-  if (storageMode != StorageMode::LOCAL_ONLY) return;
   prefsCloud.begin("cloud", false);
   DynamicJsonDocument doc(16384);
   JsonArray arr = doc.to<JsonArray>();
@@ -817,7 +816,6 @@ void persistDailyHistory() {
 }
 
 void loadDailyHistory() {
-  if (storageMode != StorageMode::LOCAL_ONLY) return;
   for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
     DAILY_HISTORY[i].clear();
     DAILY_AGG[i] = DailyAggregate();
@@ -856,7 +854,6 @@ void trimDailyHistory(size_t idx) {
 
 void finalizeDaily(const String &dayKey) {
   if (dayKey.length() == 0) return;
-  if (storageMode != StorageMode::LOCAL_ONLY) return;
   for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
     if (DAILY_AGG[i].dayKey != dayKey || DAILY_AGG[i].count == 0) continue;
     DailyPoint p;
@@ -1061,19 +1058,11 @@ bool cloudEnsureFolders(const String &dayKey) {
   String baseRoot = String("/") + CLOUD_ROOT_FOLDER;
   String metaPath = deviceRoot + "/meta";
   String dailyPath = deviceRoot + "/daily";
-  String samplesPath = deviceRoot + "/samples";
-  String samplesDayPath = dayKey.length() > 0 ? samplesPath + "/" + dayKey : "";
-  String logsPath = deviceRoot + "/logs";
-  String logsChunksPath = logsPath + "/chunks";
   bool ok = true;
   if (!ensureCollection(baseRoot, "root")) ok = false;
   if (!ensureCollection(deviceRoot, "device")) ok = false;
-  if (!ensureCollection(samplesPath, "samples")) ok = false;
   if (!ensureCollection(dailyPath, "daily")) ok = false;
   if (!ensureCollection(metaPath, "meta")) ok = false;
-  if (!ensureCollection(logsPath, "logs")) ok = false;
-  if (!ensureCollection(logsChunksPath, "logc")) ok = false;
-  if (samplesDayPath.length() > 0 && !ensureCollection(samplesDayPath, "sday")) ok = false;
   if (monthPath.length() > 0 && !ensureCollection(monthPath, "month")) ok = false;
   cloudStatus.foldersReady = ok;
   return ok;
@@ -1182,36 +1171,14 @@ String buildRecordingPayload(uint64_t epochMs) {
 }
 
 void enqueueRecordingSample(uint64_t epochMs) {
-  if (!cloudStatus.runtimeEnabled || !cloudConfig.recording) return;
-  String minuteKey = minuteKeyFromEpoch(epochMs);
-  if (minuteKey.length() == 0) {
-    minuteKey = String("unsynced_") + String((unsigned long)(millis() / 60000UL));
-  }
-  String dayKey = dayKeyForEpoch(epochMs);
-  if (dayKey.length() == 0) dayKey = currentDayKey();
-  if (dayKey.length() == 0) dayKey = "unsynced";
-  String folder = cloudSamplesFolder(dayKey);
-  if (folder.length() == 0) return;
-  String path = folder + "/samples_" + minuteKey + ".json";
-  enqueueCloudJob(path, buildRecordingPayload(epochMs), dayKey, "recording_sample", "application/json", true);
+  (void)epochMs;
+  return;
 }
 
 void enqueueRecordingEvent(const String &event, const String &reason) {
-  if (!cloudStatus.runtimeEnabled) return;
-  uint64_t nowEpoch = currentEpochMs();
-  String dayKey = currentDayKey();
-  String stamp = fileSafeTimestamp(nowEpoch);
-  String path = cloudMetaFolder() + "/recording_" + event + "_" + stamp + ".json";
-  DynamicJsonDocument doc(512);
-  doc["event"] = event;
-  doc["ts"] = nowEpoch;
-  doc["iso"] = isoTimestamp(nowEpoch);
-  doc["reason"] = reason;
-  doc["deviceId"] = deviceId();
-  doc["mode"] = "http";
-  String payload;
-  serializeJson(doc, payload);
-  enqueueCloudJob(path, payload, dayKey, "recording_event", "application/json", false);
+  (void)event;
+  (void)reason;
+  return;
 }
 
 void enqueueCloudJob(const String &path, const String &payload, const String &dayKey, const String &kind, const String &contentType, bool replaceByPath) {
@@ -1252,10 +1219,8 @@ void enqueueDailyJob(const String &dayKey, const String &payload) {
 void finalizeDayAndQueue(const String &dayKey) {
   if (dayKey.length() == 0) return;
   finalizeDaily(dayKey);
-  if (storageMode == StorageMode::LOCAL_ONLY) {
-    persistDailyHistory();
-  }
-  if (cloudLoggingActive()) {
+  persistDailyHistory();
+  if (cloudArchiveActive()) {
     String payload = serializeDailyPayload(dayKey);
     enqueueDailyJob(dayKey, payload);
   }
@@ -1828,10 +1793,11 @@ void processCloudQueue() {
     nextCloudAttemptAfterMs = now + CLOUD_WORKER_INTERVAL_MS;
   } else {
     job.attempts++;
-    unsigned long backoff = job.attempts <= 1 ? CLOUD_BACKOFF_SHORT_MS : (job.attempts <= 3 ? CLOUD_BACKOFF_MED_MS : CLOUD_BACKOFF_LONG_MS);
+    unsigned long backoff = job.kind == "daily" ? (24UL * 60UL * 60UL * 1000UL)
+        : (job.attempts <= 1 ? CLOUD_BACKOFF_SHORT_MS : (job.attempts <= 3 ? CLOUD_BACKOFF_MED_MS : CLOUD_BACKOFF_LONG_MS));
     job.nextAttemptAt = now + backoff;
     nextCloudAttemptAfterMs = job.nextAttemptAt;
-    if (job.attempts > 5) {
+    if (job.kind != "daily" && job.attempts > 5) {
       cloudQueue.erase(cloudQueue.begin());
       cloudStatus.queueSize = cloudQueue.size();
     }
@@ -1852,14 +1818,7 @@ void maintainCloudHealth() {
 }
 
 void tickCloudRecording() {
-  if (!cloudStatus.runtimeEnabled || !cloudConfig.recording) return;
-  uint64_t nowEpoch = currentEpochMs();
-  String minuteKey = minuteKeyFromEpoch(nowEpoch);
-  if (minuteKey.length() == 0) return;
-  if (minuteKey == lastRecordingMinuteKey && lastRecordingEnqueueMs != 0 && millis() - lastRecordingEnqueueMs < CLOUD_RECORDING_INTERVAL_MS) return;
-  enqueueRecordingSample(nowEpoch);
-  lastRecordingMinuteKey = minuteKey;
-  lastRecordingEnqueueMs = millis();
+  return;
 }
 
 bool sendCloudTestFile(int &httpCode, size_t &bytesOut, String &pathOut, String &errorOut) {
@@ -2541,13 +2500,7 @@ void readSensors() {
     accumulateDaily(metricIndex("vpd"), latest.vpd, sampleDay, sampleHour);
   }
 
-  if (cloudStorageActive() && sampleDay != "unsynced") {
-    if (lastDailyCheckpointMs == 0 || millis() - lastDailyCheckpointMs >= DAILY_CHECKPOINT_MS) {
-      String checkpointPayload = serializeDailyPayload(sampleDay);
-      enqueueDailyJob(sampleDay, checkpointPayload);
-      lastDailyCheckpointMs = millis();
-    }
-  }
+  (void)lastDailyCheckpointMs;
 
   unsigned long now = millis();
   auto stallCheck = [&](SensorStall &stall, SensorHealth &health, bool &enabled, const char *name) {
@@ -5169,7 +5122,7 @@ std::vector<String> dayKeysBetween(const String &from, const String &to) {
 
 void handleDailyHistory() {
   if (!enforceAuth()) return;
-  if (!cloudStorageActive()) {
+  if (!cloudConnected()) {
     server.send(403, "text/plain", "cloud inactive");
     return;
   }
@@ -5181,7 +5134,7 @@ void handleDailyHistory() {
   int idx = metricIndex(metric);
   if (idx < 0) { server.send(400, "text/plain", "invalid metric"); return; }
   pruneLogsIfLowMemory(false);
-  bool cloudOk = cloudStorageActive();
+  bool cloudOk = cloudConnected();
   std::vector<DailyPoint> points;
   DAILY_HISTORY[idx].clear();
   if (cloudOk) {
@@ -5225,8 +5178,13 @@ void handleCloudDaily() {
   String from = server.hasArg("from") ? server.arg("from") : "";
   String to = server.hasArg("to") ? server.arg("to") : "";
 
-  bool cloudConnected = cloudStatus.connected;
-  if (!cloudConnected) {
+  if (sensor == "all") {
+    server.send(400, "text/plain", "sensor required");
+    return;
+  }
+
+  bool cloudOk = cloudConnected();
+  if (!cloudOk) {
     String json;
     json.reserve(128);
     json = "{\"cloud\":false,\"hasData\":false,\"message\":\"Cloud not connected\",\"days\":[]}";
@@ -5249,11 +5207,25 @@ void handleCloudDaily() {
     return;
   }
 
+  std::vector<String> keys;
+  if (from.length() > 0 && to.length() > 0) {
+    keys = dayKeysBetween(from, to);
+  } else {
+    keys = recentDayKeys((int)retentionDays());
+  }
   String json;
   json.reserve(256);
   json = "{\"cloud\":true,\"hasData\":true,\"sensor\":\"" + sensor + "\",\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"days\":[";
-  json += "{\"date\":\"2025-12-20\",\"avg\":23.1,\"min\":21.5,\"max\":25.4},";
-  json += "{\"date\":\"2025-12-21\",\"avg\":23.4,\"min\":22.0,\"max\":26.0}";
+  bool first = true;
+  for (const auto &k : keys) {
+    DailyPoint p;
+    if (!fetchCloudDailyPoint(k, sensor, p)) {
+      continue;
+    }
+    if (!first) json += ",";
+    first = false;
+    json += "{\"date\":\"" + p.dayKey + "\",\"avg\":" + String((double)p.avg, 2) + ",\"min\":" + String((double)p.min, 2) + ",\"max\":" + String((double)p.max, 2) + "}";
+  }
   json += "]}";
   server.send(200, "application/json", json);
 #if CLOUD_DIAG
