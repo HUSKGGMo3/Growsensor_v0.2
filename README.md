@@ -8,6 +8,7 @@
 - Long-range charts (1–4 months) are cloud-gated in both UI and API; `/api/cloud/daily` proxies daily aggregates with short RAM caching and returns 403 when cloud is inactive.
 - Cloud logs are streamed to `/GrowSensor/<deviceId>/logs/chunks/` as timestamped chunk files (ISO | level | source | message), avoiding WebDAV append limitations.
 - Daily aggregates remain JSON per day (`/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json`) with avg/min/max/last/samples for each metric, and long charts request them via `/api/cloud/daily?sensor=...&from=YYYY-MM-DD&to=YYYY-MM-DD`.
+- HTTP-only builds disable TLS to save flash; Nextcloud WebDAV uses plain `http://` URLs in trusted LANs. Low-flash builds may disable mDNS (use the device IP).
 
 ### Patch v0.3.2 (experimental, Cloud Primary mode)
 - Storage modes (`LOCAL_ONLY`, `CLOUD_PRIMARY`, `LOCAL_FALLBACK`) gate persistence: when the cloud is online the ESP keeps only RAM ring buffers (live/6h/24h) and blocks local history writes, while 15-minute checkpoints upload the active day and daily rollovers queue JSON for the cloud.
@@ -15,7 +16,7 @@
 - Cloud health pings every ~30s to define connectivity; the UI shows status/last sync, hides 1M/3M/4M ranges unless `cloudEnabled && cloudConnected`, surfaces an offline notice + retry button, and long-range charts pull daily JSONs directly from the cloud while offline falling back to the 24h local buffer.
 - Hardened cloud state & runtime flags: `/api/cloud` now distinguishes persisted vs. runtime enablement, recording, queue size, last upload/test path/time, reasons, and failure counters. The worker ticks ~1.5s with tiered retry backoff (5s/15s/60s, max 5 attempts), enqueues a recording-start event immediately, and pushes per-minute recording snapshots under `/GrowSensor/<deviceId>/samples/...`.
 - New `/api/cloud/test` endpoint and “Sende Test” UI button create `TestCloud_<deviceId>_<timestamp>.txt` via MKCOL/PUT under `/GrowSensor/<deviceId>/` (LAN WebDAV), returning HTTP code/path/bytes for end-to-end verification.
-- Nextcloud HTTP/HTTPS toggle (`use_tls`): explicit “Nextcloud lokal (HTTP, kein TLS)” mode uses plain `WiFiClient` (no TLS warnings), auto-detects schemes from URLs, surfaces upload root `/GrowSensor/<deviceId>/` in the UI, and keeps the config flag persisted across reboots.
+- Nextcloud WebDAV uses plain HTTP in trusted LANs; upload root remains `/GrowSensor/<deviceId>/` and the UI keeps the config persisted across reboots.
 - Hotfix v0.3.2: fixed missing declarations/helpers in the cloud recording pipeline; restored successful build.
 - Hotfix v0.3.2a: fixed ArduinoJson null assignments and removed duplicate default arguments to restore builds.
 
