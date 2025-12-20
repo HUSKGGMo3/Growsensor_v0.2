@@ -1,6 +1,12 @@
 # Growsensor – ESP32 Monitoring Node
 
-**Current release: v0.3.4 (Stability + UX Reborn)**
+**Current release: v0.3.5 (Stability + Insight Update)**
+
+### Patch v0.3.5 (Stability + Insight Update)
+- Adds periodic cloud debug snapshots every 5 minutes (`/GrowSensor/<deviceId>/logs/debug_YYYY-MM-DD.txt`) with Wi‑Fi, cloud queue/backoff, sensor health, and loop diagnostics; no local persistence beyond the short upload cache.
+- VPD header KPI now color-codes against the stage target (green within ±10%, yellow outside, red critical) with a subtle pulse that matches existing UI styling.
+- Hover charts are preloaded (throttled) so mini graphs render immediately without hover delays, while keeping 6h/24h/long-range logic intact.
+- Factor changes (PPFD channel + VPD stage) now trigger safe recomputation and redraws without UI crashes, guarding against NaNs in VPD heatmaps and charts.
 
 ### Patch v0.3.4 (Stability + UX Reborn)
 - Cloud logging + daily summaries restored with lightweight buffering and WebDAV daily summaries (`/GrowSensor/<deviceId>/daily/YYYY-MM-DD_summary.txt`).

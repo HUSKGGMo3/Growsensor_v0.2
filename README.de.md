@@ -1,6 +1,12 @@
 # ESP32 Grow Sensor / Monitoring Node (Deutsch)
 
-**Aktuelle Version: v0.3.4 (Stabilität + UX Reborn)**
+**Aktuelle Version: v0.3.5 (Stability + Insight Update)**
+
+### Patch v0.3.5 (Stability + Insight Update)
+- Periodische Cloud-Debug-Snapshots alle 5 Minuten (`/GrowSensor/<deviceId>/logs/debug_YYYY-MM-DD.txt`) mit WLAN/Cloud-Queue/Backoff/Sensorzuständen sowie Loop-Health; kein dauerhafter ESP-Speicher.
+- VPD-KPI im Header erhält eine klare Farblogik (grün ±10% Ziel, gelb außerhalb, rot kritisch) inkl. sanfter Pulse-Animation im bestehenden Stil.
+- Mini-Graphs werden vorab geladen (gedrosselt) und sind sofort sichtbar, ohne Hover-Wartezeit, bei gleicher Live/24h/Cloud-Logik.
+- Faktor-Änderungen (PPFD-Kanal + VPD-Stage) triggern stabile Neuberechnung/Redraws ohne UI-Absturz; VPD-Heatmap/Charts sind gegen NaN geschützt.
 
 ### Patch v0.3.4 (Stabilität + UX Reborn)
 - Cloud-Logging + Daily Summary stabilisiert (leichtgewichtige Pufferung) inkl. täglicher Summary-Datei unter `/GrowSensor/<deviceId>/daily/YYYY-MM-DD_summary.txt`.
