@@ -1,6 +1,11 @@
 # Growsensor – ESP32 Monitoring Node
 
-**Current release: v0.3.1 (experimental / untested)**
+**Current release: v0.3.2 (experimental / untested)**
+
+### Patch v0.3.2 (experimental, Cloud Primary mode)
+- Storage modes (`LOCAL_ONLY`, `CLOUD_PRIMARY`, `LOCAL_FALLBACK`) gate persistence: when the cloud is online the ESP keeps only RAM ring buffers (live/6h/24h) and blocks local history writes, while 15-minute checkpoints upload the active day and daily rollovers queue JSON for the cloud.
+- WebDAV uploads target `/GrowSensor/<deviceId>/daily/YYYY-MM/YYYY-MM-DD.json` (HTTP basic auth, LAN-only) with date/timezone/firmware metadata, per-metric aggregates (avg/min/max/samples/last), and optional hourly bins; folders are auto-created via MKCOL and uploads are retried with a bounded, upserting queue.
+- Cloud health pings every ~30s to define connectivity; the UI shows status/last sync, hides 1M/3M/4M ranges unless `cloudEnabled && cloudConnected`, surfaces an offline notice + retry button, and long-range charts pull daily JSONs directly from the cloud while offline falling back to the 24h local buffer.
 
 ### Patch v0.3.1 (experimental, HTTP-only LAN cloud)
 - New **Cloud** tab (visible for all users) to configure LAN-only Nextcloud WebDAV logging over HTTP. Stores credentials in a dedicated `cloud` namespace, never wipes Wi‑Fi/settings, and warns when using HTTP (plaintext). Includes Test/Start/Stop controls, queue/failure counters, and a retention selector (1–4 months).

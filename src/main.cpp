@@ -61,6 +61,10 @@ static constexpr unsigned long TIME_SYNC_REFRESH_MS = 300000;   // refresh offse
 static constexpr time_t TIME_VALID_AFTER = 1700000000;          // ~2023-11-14 UTC safeguard
 static constexpr unsigned long CLOUD_RETRY_MS = 15000;
 static constexpr unsigned long CLOUD_TEST_TIMEOUT_MS = 8000;
+static constexpr unsigned long CLOUD_HEALTH_WINDOW_MS = 60000;
+static constexpr unsigned long CLOUD_PING_INTERVAL_MS = 30000;
+static constexpr unsigned long DAILY_CHECKPOINT_MS = 15UL * 60UL * 1000UL;
+static const char *FIRMWARE_VERSION = "v0.3.2";
 
 static const char *NTP_SERVER_1 = "pool.ntp.org";
 static const char *NTP_SERVER_2 = "time.nist.gov";
@@ -100,6 +104,12 @@ enum class Co2SensorType {
   SCD30,
   SCD40,
   SCD41
+};
+
+enum class StorageMode {
+  LOCAL_ONLY,
+  CLOUD_PRIMARY,
+  LOCAL_FALLBACK
 };
 
 float luxToPPFD(float lux, LightChannel channel) {
@@ -264,6 +274,15 @@ struct DailyPoint {
   uint32_t count = 0;
 };
 
+struct HourlyAggregate {
+  uint8_t hour = 0;
+  uint32_t count = 0;
+  float sum = 0.0f;
+  float min = NAN;
+  float max = NAN;
+  bool active = false;
+};
+
 struct CloudJob {
   String dayKey;
   String path;
@@ -282,8 +301,9 @@ struct CloudConfig {
 struct CloudStatus {
   bool connected = false;
   bool enabled = false;
-  unsigned long lastUploadMs = 0;
-  unsigned long lastFailureMs = 0;
+  uint64_t lastUploadMs = 0;
+  uint64_t lastFailureMs = 0;
+  uint64_t lastPingMs = 0;
   uint32_t failureCount = 0;
   String lastError;
   size_t queueSize = 0;
@@ -341,6 +361,8 @@ bool logPruneNoted = false;
 void pruneLogsIfLowMemory(bool allowNotice = true);
 void appendLogLine(const String &line);
 String deviceId();
+String buildCloudUrl(const String &path);
+bool ensureCollection(const String &url);
 
 // Sensor toggles (persisted)
 bool enableLight = true;
@@ -392,11 +414,18 @@ const size_t HISTORY_METRIC_COUNT = sizeof(HISTORY_METRICS) / sizeof(HISTORY_MET
 MetricSampleInfo SAMPLE_INFO[HISTORY_METRIC_COUNT];
 DailyAggregate DAILY_AGG[HISTORY_METRIC_COUNT];
 std::vector<DailyPoint> DAILY_HISTORY[HISTORY_METRIC_COUNT];
+HourlyAggregate HOURLY_AGG[HISTORY_METRIC_COUNT][24];
+String hourlyDayKey;
 
 CloudConfig cloudConfig;
 CloudStatus cloudStatus;
 std::vector<CloudJob> cloudQueue;
 Preferences prefsCloud;
+StorageMode storageMode = StorageMode::LOCAL_ONLY;
+unsigned long lastCloudPingMs = 0;
+unsigned long lastCloudOkMs = 0;
+uint64_t lastCloudOkEpochMs = 0;
+unsigned long lastDailyCheckpointMs = 0;
 
 // ----------------------------
 // Helpers
@@ -527,11 +556,51 @@ String currentDayKey() {
   return dayKeyForEpoch(currentEpochMs());
 }
 
+const char *storageModeName(StorageMode mode) {
+  switch (mode) {
+  case StorageMode::CLOUD_PRIMARY: return "cloud_primary";
+  case StorageMode::LOCAL_FALLBACK: return "local_fallback";
+  default: return "local_only";
+  }
+}
+
+bool cloudHealthOk() {
+  if (!cloudConfig.enabled || lastCloudOkMs == 0) return false;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  return millis() - lastCloudOkMs <= CLOUD_HEALTH_WINDOW_MS;
+}
+
+void refreshStorageMode() {
+  StorageMode next = StorageMode::LOCAL_ONLY;
+  if (cloudConfig.enabled) {
+    next = cloudHealthOk() ? StorageMode::CLOUD_PRIMARY : StorageMode::LOCAL_FALLBACK;
+  }
+  storageMode = next;
+  cloudStatus.enabled = cloudConfig.enabled;
+  cloudStatus.connected = storageMode == StorageMode::CLOUD_PRIMARY;
+}
+
 uint16_t retentionDays() {
   uint8_t months = cloudConfig.retentionMonths;
   if (months < 1) months = 1;
   if (months > 4) months = 4;
   return (uint16_t)(months * 30);
+}
+
+void markCloudSuccess() {
+  lastCloudOkMs = millis();
+  lastCloudOkEpochMs = currentEpochMs();
+  cloudStatus.lastPingMs = lastCloudOkEpochMs;
+  cloudStatus.lastError = "";
+  refreshStorageMode();
+}
+
+void markCloudFailure(const String &msg) {
+  cloudStatus.lastError = msg;
+  cloudStatus.failureCount++;
+  cloudStatus.lastFailureMs = currentEpochMs();
+  cloudStatus.connected = false;
+  refreshStorageMode();
 }
 
 void saveCloudConfig() {
@@ -542,6 +611,8 @@ void saveCloudConfig() {
   prefsCloud.putBool("enabled", cloudConfig.enabled);
   prefsCloud.putUChar("retention", cloudConfig.retentionMonths);
   prefsCloud.end();
+  cloudStatus.enabled = cloudConfig.enabled;
+  refreshStorageMode();
 }
 
 void loadCloudConfig() {
@@ -554,9 +625,12 @@ void loadCloudConfig() {
   if (cloudConfig.retentionMonths < 1) cloudConfig.retentionMonths = 1;
   if (cloudConfig.retentionMonths > 4) cloudConfig.retentionMonths = 4;
   prefsCloud.end();
+  cloudStatus.enabled = cloudConfig.enabled;
+  refreshStorageMode();
 }
 
 void persistDailyHistory() {
+  if (storageMode != StorageMode::LOCAL_ONLY) return;
   prefsCloud.begin("cloud", false);
   DynamicJsonDocument doc(16384);
   JsonArray arr = doc.to<JsonArray>();
@@ -581,6 +655,7 @@ void persistDailyHistory() {
 }
 
 void loadDailyHistory() {
+  if (storageMode != StorageMode::LOCAL_ONLY) return;
   for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
     DAILY_HISTORY[i].clear();
     DAILY_AGG[i] = DailyAggregate();
@@ -619,6 +694,7 @@ void trimDailyHistory(size_t idx) {
 
 void finalizeDaily(const String &dayKey) {
   if (dayKey.length() == 0) return;
+  if (storageMode != StorageMode::LOCAL_ONLY) return;
   for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
     if (DAILY_AGG[i].dayKey != dayKey || DAILY_AGG[i].count == 0) continue;
     DailyPoint p;
@@ -643,7 +719,28 @@ void resetDailyAgg(int idx, const String &dayKey) {
   DAILY_AGG[idx].last = NAN;
 }
 
-void accumulateDaily(int idx, float value, const String &dayKey) {
+void resetHourlyAgg(const String &dayKey) {
+  hourlyDayKey = dayKey;
+  for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
+    for (size_t h = 0; h < 24; h++) {
+      HOURLY_AGG[i][h].hour = (uint8_t)h;
+      HOURLY_AGG[i][h].count = 0;
+      HOURLY_AGG[i][h].sum = 0;
+      HOURLY_AGG[i][h].min = NAN;
+      HOURLY_AGG[i][h].max = NAN;
+      HOURLY_AGG[i][h].active = false;
+    }
+  }
+}
+
+void resetAllDaily(const String &dayKey) {
+  for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
+    resetDailyAgg(i, dayKey);
+  }
+  resetHourlyAgg(dayKey);
+}
+
+void accumulateDaily(int idx, float value, const String &dayKey, int hour) {
   if (idx < 0 || idx >= (int)HISTORY_METRIC_COUNT || dayKey.length() == 0 || isnan(value)) return;
   if (DAILY_AGG[idx].dayKey != dayKey) {
     if (DAILY_AGG[idx].dayKey.length() > 0) {
@@ -658,6 +755,18 @@ void accumulateDaily(int idx, float value, const String &dayKey) {
   if (isnan(agg.min) || value < agg.min) agg.min = value;
   if (isnan(agg.max) || value > agg.max) agg.max = value;
   agg.last = value;
+  if (hour >= 0 && hour < 24) {
+    if (hourlyDayKey != dayKey) {
+      resetHourlyAgg(dayKey);
+    }
+    HourlyAggregate &bin = HOURLY_AGG[idx][hour];
+    bin.hour = (uint8_t)hour;
+    bin.count++;
+    bin.sum += value;
+    if (!bin.active || isnan(bin.min) || value < bin.min) bin.min = value;
+    if (!bin.active || isnan(bin.max) || value > bin.max) bin.max = value;
+    bin.active = true;
+  }
 }
 
 bool dailyPointFor(int idx, const String &dayKey, DailyPoint &out) {
@@ -668,6 +777,14 @@ bool dailyPointFor(int idx, const String &dayKey, DailyPoint &out) {
   return false;
 }
 
+int hourFromEpoch(uint64_t epochMs) {
+  if (!isTimeSynced()) return -1;
+  time_t seconds = (time_t)(epochMs / 1000ULL);
+  struct tm local;
+  if (localtime_r(&seconds, &local) == nullptr) return -1;
+  return local.tm_hour;
+}
+
 String safeBaseUrl() {
   String b = cloudConfig.baseUrl;
   b.trim();
@@ -675,30 +792,113 @@ String safeBaseUrl() {
   return b;
 }
 
-void enqueueCloudJob(const String &dayKey) {
-  if (!cloudConfig.enabled || cloudConfig.baseUrl.length() == 0) return;
-  DynamicJsonDocument doc(1024);
-  JsonObject root = doc.to<JsonObject>();
-  for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
-    DailyPoint p;
-    if (!dailyPointFor(i, dayKey, p)) continue;
-    JsonObject m = root.createNestedObject(HISTORY_METRICS[i].id);
-    m["count"] = p.count;
-    m["avg"] = p.avg;
-    m["min"] = p.min;
-    m["max"] = p.max;
-    m["last"] = p.last;
-  }
-  String payload;
-  serializeJson(root, payload);
-  if (payload.length() == 0) return;
+String cloudRootPath() {
   String base = safeBaseUrl();
-  if (base.length() == 0) return;
-  bool hasRoot = base.endsWith("GrowSensor");
+  String devId = deviceId();
+  bool hasDevice = base.endsWith(devId) || base.endsWith(devId + "/");
+  if (hasDevice) {
+    int pos = base.lastIndexOf("/" + devId);
+    if (pos >= 0) return base.substring(pos);
+  }
+  bool hasRoot = base.endsWith("GrowSensor") || base.endsWith("GrowSensor/");
   String prefix = hasRoot ? "" : "/GrowSensor";
-  String path = prefix + "/" + deviceId() + "/daily/" + dayKey;
-  path.replace("-", "/");
-  path += ".json";
+  return prefix + "/" + devId;
+}
+
+String cloudDailyMonthPath(const String &dayKey) {
+  if (dayKey.length() < 7) return "";
+  return cloudRootPath() + "/daily/" + dayKey.substring(0, 7);
+}
+
+String cloudDailyPath(const String &dayKey) {
+  if (dayKey.length() < 8) return "";
+  return cloudDailyMonthPath(dayKey) + "/" + dayKey + ".json";
+}
+
+bool cloudEnsureFolders(const String &dayKey) {
+  if (cloudConfig.baseUrl.length() == 0) return false;
+  String monthPath = cloudDailyMonthPath(dayKey);
+  if (monthPath.length() == 0) return false;
+  String deviceRoot = cloudRootPath();
+  String baseRoot = deviceRoot;
+  int lastSlash = deviceRoot.lastIndexOf('/');
+  if (lastSlash > 0) {
+    baseRoot = deviceRoot.substring(0, lastSlash);
+  }
+  String metaPath = deviceRoot + "/meta";
+  String dailyPath = deviceRoot + "/daily";
+  const String paths[] = {baseRoot, deviceRoot, metaPath, dailyPath, monthPath};
+  bool ok = true;
+  for (const auto &p : paths) {
+    if (p.length() == 0) continue;
+    String url = buildCloudUrl(p.startsWith("/") ? p : (String("/") + p));
+    ok = ensureCollection(url) && ok;
+  }
+  return ok;
+}
+
+String serializeDailyPayload(const String &dayKey) {
+  if (dayKey.length() == 0 || dayKey == "unsynced") return "";
+  DynamicJsonDocument doc(8192);
+  doc["date"] = dayKey;
+  doc["tz"] = timezoneName;
+  doc["deviceId"] = deviceId();
+  doc["firmware"] = FIRMWARE_VERSION;
+  JsonObject sensors = doc.createNestedObject("sensors");
+  bool hasMetric = false;
+  for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
+    if (DAILY_AGG[i].dayKey != dayKey || DAILY_AGG[i].count == 0) continue;
+    JsonObject m = sensors.createNestedObject(HISTORY_METRICS[i].id);
+    m["unit"] = HISTORY_METRICS[i].unit;
+    m["avg"] = DAILY_AGG[i].sum / DAILY_AGG[i].count;
+    m["min"] = DAILY_AGG[i].min;
+    m["max"] = DAILY_AGG[i].max;
+    m["samples"] = DAILY_AGG[i].count;
+    m["last"] = DAILY_AGG[i].last;
+    hasMetric = true;
+  }
+  if (hourlyDayKey == dayKey) {
+    JsonArray hourly = doc.createNestedArray("hourly");
+    for (size_t h = 0; h < 24; h++) {
+      bool any = false;
+      JsonObject hourObj;
+      JsonObject hourSensors;
+      for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
+        HourlyAggregate &bin = HOURLY_AGG[i][h];
+        if (!bin.active || bin.count == 0) continue;
+        if (!any) {
+          hourObj = hourly.createNestedObject();
+          hourObj["h"] = (int)h;
+          hourSensors = hourObj.createNestedObject("sensors");
+          any = true;
+        }
+        JsonObject m = hourSensors.createNestedObject(HISTORY_METRICS[i].id);
+        m["avg"] = bin.sum / bin.count;
+        m["min"] = bin.min;
+        m["max"] = bin.max;
+        m["samples"] = bin.count;
+      }
+    }
+  }
+  if (!hasMetric) return "";
+  String payload;
+  serializeJson(doc, payload);
+  return payload;
+}
+
+void enqueueCloudJob(const String &dayKey, const String &payload) {
+  if (!cloudConfig.enabled || cloudConfig.baseUrl.length() == 0 || payload.length() == 0) return;
+  String path = cloudDailyPath(dayKey);
+  if (path.length() == 0) return;
+  for (auto &job : cloudQueue) {
+    if (job.dayKey == dayKey) {
+      job.payload = payload;
+      job.path = path;
+      job.attempts = 0;
+      cloudStatus.queueSize = cloudQueue.size();
+      return;
+    }
+  }
   CloudJob job;
   job.dayKey = dayKey;
   job.path = path;
@@ -713,8 +913,11 @@ void enqueueCloudJob(const String &dayKey) {
 void finalizeDayAndQueue(const String &dayKey) {
   if (dayKey.length() == 0) return;
   finalizeDaily(dayKey);
-  persistDailyHistory();
-  enqueueCloudJob(dayKey);
+  if (storageMode == StorageMode::LOCAL_ONLY) {
+    persistDailyHistory();
+  }
+  String payload = serializeDailyPayload(dayKey);
+  enqueueCloudJob(dayKey, payload);
 }
 
 void addPoint(HistoryPoint *buffer, size_t capacity, size_t &start, size_t &count, uint64_t ts, float value) {
@@ -941,20 +1144,69 @@ bool ensureCollection(const String &url) {
   return false;
 }
 
-bool testCloudConnection() {
-  if (cloudConfig.baseUrl.length() == 0) return false;
-  String url = buildCloudUrl("/");
+bool pingCloud(bool force = false) {
+  if (!cloudConfig.enabled || cloudConfig.baseUrl.length() == 0) return false;
+  if (WiFi.status() != WL_CONNECTED) {
+    markCloudFailure("WiFi disconnected");
+    return false;
+  }
+  unsigned long now = millis();
+  if (!force && lastCloudPingMs != 0 && now - lastCloudPingMs < CLOUD_PING_INTERVAL_MS) return cloudHealthOk();
+  lastCloudPingMs = now;
+  String path = cloudRootPath();
+  if (path.length() == 0) path = "/";
+  String url = buildCloudUrl(path);
   int code = 0;
   String resp;
   bool ok = webdavRequest("PROPFIND", url, "", "text/plain", code, &resp);
-  if (!ok) return false;
-  cloudStatus.connected = code >= 200 && code < 400;
-  if (!cloudStatus.connected) {
-    cloudStatus.lastError = "Conn test failed: " + String(code);
-    cloudStatus.failureCount++;
-    cloudStatus.lastFailureMs = millis();
+  if (ok && code >= 200 && code < 400) {
+    markCloudSuccess();
+    return true;
   }
-  return cloudStatus.connected;
+  markCloudFailure("Conn test failed: " + String(code));
+  return false;
+}
+
+bool testCloudConnection() {
+  return pingCloud(true);
+}
+
+bool cloudGet(const String &path, String &resp, int &code) {
+  String fullPath = path.startsWith("/") ? path : (String("/") + path);
+  String url = buildCloudUrl(fullPath);
+  return webdavRequest("GET", url, "", nullptr, code, &resp, CLOUD_TEST_TIMEOUT_MS);
+}
+
+bool fetchCloudDailyPoint(const String &dayKey, const String &metric, DailyPoint &out) {
+  String path = cloudDailyPath(dayKey);
+  if (path.length() == 0) return false;
+  int code = 0;
+  String payload;
+  if (!cloudGet(path, payload, code)) {
+    markCloudFailure("Daily GET failed");
+    return false;
+  }
+  if (code == 404) return false;
+  if (code < 200 || code >= 300) {
+    markCloudFailure("Daily GET code: " + String(code));
+    return false;
+  }
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, payload) != DeserializationError::Ok) {
+    markCloudFailure("Daily JSON parse failed");
+    return false;
+  }
+  markCloudSuccess();
+  JsonObject sensors = doc["sensors"];
+  if (!sensors.containsKey(metric)) return false;
+  JsonObject m = sensors[metric];
+  out.dayKey = doc["date"] | dayKey;
+  out.avg = m["avg"] | NAN;
+  out.min = m["min"] | NAN;
+  out.max = m["max"] | NAN;
+  out.last = m["last"] | NAN;
+  out.count = m["samples"] | m["count"] | 0;
+  return out.count > 0;
 }
 
 bool uploadCloudJob(const CloudJob &job) {
@@ -962,39 +1214,33 @@ bool uploadCloudJob(const CloudJob &job) {
   if (base.length() == 0) return false;
   String fullPath = job.path;
   if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
-  String url = buildCloudUrl(fullPath);
-  // ensure collections
-  int lastSlash = fullPath.lastIndexOf('/');
-  String dir = fullPath.substring(0, lastSlash);
-  String accum = "";
-  int start = 0;
-  while (start < dir.length()) {
-    int next = dir.indexOf('/', start + 1);
-    if (next < 0) next = dir.length();
-    accum = dir.substring(0, next);
-    if (accum.length() > 0) {
-      String partial = buildCloudUrl(accum);
-      ensureCollection(partial);
-    }
-    start = next;
+  if (!cloudEnsureFolders(job.dayKey)) {
+    markCloudFailure("Ensure folders failed");
+    return false;
   }
+  String url = buildCloudUrl(fullPath);
   int code = 0;
   String resp;
   bool ok = webdavRequest("PUT", url, job.payload, "application/json", code, &resp, CLOUD_TEST_TIMEOUT_MS);
   if (!ok || code < 200 || code >= 300) {
-    cloudStatus.lastError = "Upload failed: " + String(code);
-    cloudStatus.failureCount++;
-    cloudStatus.lastFailureMs = millis();
+    markCloudFailure("Upload failed: " + String(code));
     return false;
   }
   cloudStatus.lastUploadMs = currentEpochMs();
-  cloudStatus.connected = true;
+  markCloudSuccess();
   cloudStatus.queueSize = cloudQueue.size();
   return true;
 }
 
 void processCloudQueue() {
-  if (!cloudConfig.enabled || cloudQueue.empty()) return;
+  if (!cloudConfig.enabled || cloudQueue.empty()) {
+    refreshStorageMode();
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    refreshStorageMode();
+    return;
+  }
   unsigned long now = millis();
   if (lastCloudAttempt != 0 && now - lastCloudAttempt < CLOUD_RETRY_MS) return;
   lastCloudAttempt = now;
@@ -1006,8 +1252,22 @@ void processCloudQueue() {
     cloudQueue[0].attempts++;
     if (cloudQueue[0].attempts > 5) {
       cloudQueue.erase(cloudQueue.begin());
+      cloudStatus.queueSize = cloudQueue.size();
     }
   }
+  refreshStorageMode();
+}
+
+void maintainCloudHealth() {
+  if (!cloudConfig.enabled) {
+    refreshStorageMode();
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    refreshStorageMode();
+    return;
+  }
+  pingCloud(false);
 }
 
 void applyTimezoneEnv() {
@@ -1602,38 +1862,46 @@ void readSensors() {
 
   uint64_t sampleTs = currentEpochMs();
   String sampleDay = isTimeSynced() ? dayKeyForEpoch(sampleTs) : String("unsynced");
+  int sampleHour = hourFromEpoch(sampleTs);
   if (activeDayKey.length() == 0) {
     activeDayKey = sampleDay;
   } else if (sampleDay.length() > 0 && sampleDay != activeDayKey) {
     finalizeDayAndQueue(activeDayKey);
     activeDayKey = sampleDay;
-    for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
-      resetDailyAgg(i, sampleDay);
-    }
+    resetAllDaily(sampleDay);
+    lastDailyCheckpointMs = 0;
   }
   if (lightSampled) {
     pushHistoryValue("lux", latest.lux, sampleTs);
     pushHistoryValue("ppfd", latest.ppfd, sampleTs);
-    accumulateDaily(metricIndex("lux"), latest.lux, sampleDay);
-    accumulateDaily(metricIndex("ppfd"), latest.ppfd, sampleDay);
+    accumulateDaily(metricIndex("lux"), latest.lux, sampleDay, sampleHour);
+    accumulateDaily(metricIndex("ppfd"), latest.ppfd, sampleDay, sampleHour);
   }
   if (co2Sampled) {
     pushHistoryValue("co2", static_cast<float>(latest.co2ppm), sampleTs);
-    accumulateDaily(metricIndex("co2"), static_cast<float>(latest.co2ppm), sampleDay);
+    accumulateDaily(metricIndex("co2"), static_cast<float>(latest.co2ppm), sampleDay, sampleHour);
   }
   if (climateSampled) {
     pushHistoryValue("temp", latest.ambientTempC, sampleTs);
     pushHistoryValue("humidity", latest.humidity, sampleTs);
-    accumulateDaily(metricIndex("temp"), latest.ambientTempC, sampleDay);
-    accumulateDaily(metricIndex("humidity"), latest.humidity, sampleDay);
+    accumulateDaily(metricIndex("temp"), latest.ambientTempC, sampleDay, sampleHour);
+    accumulateDaily(metricIndex("humidity"), latest.humidity, sampleDay, sampleHour);
   }
   if (leafSampled) {
     pushHistoryValue("leaf", latest.leafTempC, sampleTs);
-    accumulateDaily(metricIndex("leaf"), latest.leafTempC, sampleDay);
+    accumulateDaily(metricIndex("leaf"), latest.leafTempC, sampleDay, sampleHour);
   }
   if (vpdUpdated && !isnan(latest.vpd)) {
     pushHistoryValue("vpd", latest.vpd, sampleTs);
-    accumulateDaily(metricIndex("vpd"), latest.vpd, sampleDay);
+    accumulateDaily(metricIndex("vpd"), latest.vpd, sampleDay, sampleHour);
+  }
+
+  if (storageMode == StorageMode::CLOUD_PRIMARY && sampleDay != "unsynced") {
+    if (lastDailyCheckpointMs == 0 || millis() - lastDailyCheckpointMs >= DAILY_CHECKPOINT_MS) {
+      String checkpointPayload = serializeDailyPayload(sampleDay);
+      enqueueCloudJob(sampleDay, checkpointPayload);
+      lastDailyCheckpointMs = millis();
+    }
   }
 
   unsigned long now = millis();
@@ -1664,7 +1932,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GrowSensor v0.3.1</title>
+    <title>GrowSensor v0.3.2</title>
     <style>
       :root { color-scheme: light dark; }
       html, body { background: #0f172a; color: #e2e8f0; min-height: 100%; }
@@ -1822,7 +2090,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <header>
       <div class="header-row">
         <div>
-          <h1>GrowSensor – v0.3.1</h1>
+          <h1>GrowSensor – v0.3.2</h1>
           <div class="hover-hint">Live Monitoring</div>
         </div>
         <div class="header-row" style="gap:10px;">
@@ -2037,6 +2305,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
             <select id="chartColorSelect" class="color-select"></select>
           </label>
         </div>
+        <div id="cloudChartNotice" class="status err" style="display:none; align-items:center; gap:10px; margin-top:4px;">
+          Cloud offline — zeige lokale 24h
+          <button id="cloudRetry" class="ghost" style="width:auto; padding:6px 10px; margin:0;">Retry</button>
+        </div>
         <div class="chart"><canvas id="chart"></canvas></div>
       </section>
 
@@ -2201,7 +2473,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         <button id="savePartner">Partner speichern</button>
       </section>
     </main>
-    <footer>Growcontroller v0.3.1 (experimental) • Sensorgehäuse v0.3</footer>
+    <footer>Growcontroller v0.3.2 (experimental) • Sensorgehäuse v0.3</footer>
 
     <div id="devModal">
       <div class="card" style="max-width:420px;width:90%;">
@@ -2525,6 +2797,8 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       const cloudFailures = getEl('cloudFailures');
       const cloudLastUpload = getEl('cloudLastUpload');
       const cloudLastError = getEl('cloudLastError');
+      const cloudChartNotice = getEl('cloudChartNotice');
+      const cloudRetryBtn = getEl('cloudRetry');
       let detailMetric = null;
       let detailMode = 'live';
       let detailVpdView = 'heatmap';
@@ -2547,7 +2821,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       };
       const metricDataState = {};
       metrics.forEach(m => metricDataState[m] = { ever:false, last:0 });
-      const cloudState = { enabled:false, connected:false, lastUpload:0, queue:0, failures:0, lastError:'' };
+      const cloudState = { enabled:false, connected:false, lastUpload:0, lastPing:0, queue:0, failures:0, lastError:'', storageMode:'local_only' };
       const TREND_CONFIG = {
         temp: { window: 8, minDelta: 0.08, strong: 0.35, decimals: 1 },
         humidity: { window: 8, minDelta: 0.4, strong: 1.5, decimals: 1 },
@@ -3694,6 +3968,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         const normalized = normalizeMode(mode);
         const key = `${metric}-${normalized}`;
         if (!detailCache[key]) detailCache[key] = [];
+        if ((normalized === '30d' || normalized === '90d' || normalized === '120d') && !(cloudState.enabled && cloudState.connected)) {
+          detailCache[key] = [];
+          return detailCache[key];
+        }
         try {
           let mapped = [];
           if (normalized === '30d' || normalized === '90d' || normalized === '120d') {
@@ -4711,10 +4989,14 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
 
       function renderCloudStatus(data = {}) {
         cloudState.enabled = data.enabled === 1 || data.enabled === true;
-        cloudState.connected = data.connected === 1 || data.connected === true;
-        cloudState.lastUpload = data.last_upload_ms || 0;
-        cloudState.queue = data.queue_size || 0;
-        cloudState.failures = data.failures || 0;
+        cloudState.storageMode = typeof data.storage_mode === 'string' ? data.storage_mode : cloudState.storageMode;
+        cloudState.connected = (data.connected === 1 || data.connected === true) || cloudState.storageMode === 'cloud_primary';
+        const lastUploadVal = typeof data.last_upload_ms === 'number' ? data.last_upload_ms : parseInt(data.last_upload_ms || '0', 10);
+        const lastPingVal = typeof data.last_ping_ms === 'number' ? data.last_ping_ms : parseInt(data.last_ping_ms || '0', 10);
+        cloudState.lastUpload = Number.isFinite(lastUploadVal) ? lastUploadVal : 0;
+        cloudState.lastPing = Number.isFinite(lastPingVal) ? lastPingVal : 0;
+        cloudState.queue = typeof data.queue_size === 'number' ? data.queue_size : parseInt(data.queue_size || '0', 10);
+        cloudState.failures = typeof data.failures === 'number' ? data.failures : parseInt(data.failures || '0', 10);
         cloudState.lastError = data.last_error || '';
         if (cloudEnabledState) cloudEnabledState.textContent = cloudState.enabled ? 'yes' : 'no';
         if (cloudConnected) cloudConnected.textContent = cloudState.connected ? 'yes' : 'no';
@@ -4722,14 +5004,25 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
         if (cloudFailures) cloudFailures.textContent = String(cloudState.failures);
         if (cloudLastError) cloudLastError.textContent = cloudState.lastError || '–';
         if (cloudLastUpload) {
-          if (cloudState.lastUpload) {
-            const secs = Math.round((Date.now() - cloudState.lastUpload) / 1000);
+          const stamp = cloudState.lastUpload || cloudState.lastPing;
+          if (stamp) {
+            const secs = Math.round((Date.now() - stamp) / 1000);
             cloudLastUpload.textContent = secs < 5 ? 'gerade eben' : `${secs}s ago`;
           } else {
             cloudLastUpload.textContent = '–';
           }
         }
-        const showLongRanges = cloudState.enabled && (cloudState.connected || cloudState.lastUpload > 0);
+        const showLongRanges = cloudState.enabled && cloudState.connected;
+        const offline = cloudState.enabled && !cloudState.connected;
+        if (cloudChartNotice) cloudChartNotice.style.display = offline ? 'flex' : 'none';
+        if (cloudRetryBtn) cloudRetryBtn.disabled = !offline;
+        if (cloudStatusMsg && offline) {
+          cloudStatusMsg.textContent = 'Cloud offline — zeige lokale 24h';
+          cloudStatusMsg.className = 'status err';
+        } else if (cloudStatusMsg && !offline && cloudStatusMsg.textContent.includes('Cloud offline')) {
+          cloudStatusMsg.textContent = '';
+          cloudStatusMsg.className = 'status';
+        }
         document.querySelectorAll('.cloud-range').forEach(btn => btn.style.display = showLongRanges ? 'inline-block' : 'none');
         if (!showLongRanges && chartRange !== '24h') {
           chartRange = '24h';
@@ -4822,6 +5115,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       if (cloudStartBtn) cloudStartBtn.addEventListener('click', () => cloudAction('start'));
       const cloudStopBtn = getEl('cloudStop');
       if (cloudStopBtn) cloudStopBtn.addEventListener('click', () => cloudAction('stop'));
+      if (cloudRetryBtn) cloudRetryBtn.addEventListener('click', () => testCloud());
       if (cloudEnabledToggle) cloudEnabledToggle.addEventListener('change', () => saveCloudConfig(true));
       if (cloudUrlInput) cloudUrlInput.addEventListener('input', () => {
         const usesHttp = (cloudUrlInput.value || '').startsWith('http://');
@@ -5175,15 +5469,42 @@ time_t parseDayKey(const String &dayKey) {
   return mktime(&t);
 }
 
+std::vector<String> recentDayKeys(int days) {
+  std::vector<String> keys;
+  if (!isTimeSynced()) return keys;
+  if (days < 1) return keys;
+  uint64_t now = currentEpochMs();
+  const uint64_t dayMs = 24ULL * 60ULL * 60ULL * 1000ULL;
+  for (int i = days - 1; i >= 0; --i) {
+    uint64_t ts = now > (uint64_t)i * dayMs ? now - ((uint64_t)i * dayMs) : 0;
+    keys.push_back(dayKeyForEpoch(ts));
+  }
+  return keys;
+}
+
 void handleDailyHistory() {
   if (!enforceAuth()) return;
   String metric = server.hasArg("metric") ? server.arg("metric") : "";
   int days = server.hasArg("days") ? server.arg("days").toInt() : 30;
   if (days < 1) days = 1;
   if (days > 120) days = 120;
+  days = std::min(days, (int)retentionDays());
   int idx = metricIndex(metric);
   if (idx < 0) { server.send(400, "text/plain", "invalid metric"); return; }
   pruneLogsIfLowMemory(false);
+  bool cloudOk = cloudConfig.enabled && cloudHealthOk();
+  std::vector<DailyPoint> points;
+  DAILY_HISTORY[idx].clear();
+  if (cloudOk) {
+    auto keys = recentDayKeys(days);
+    for (const auto &k : keys) {
+      DailyPoint p;
+      if (fetchCloudDailyPoint(k, metric, p)) {
+        DAILY_HISTORY[idx].push_back(p);
+      }
+    }
+    points = DAILY_HISTORY[idx];
+  }
   String json;
   json.reserve(256);
   json = "{\"metric\":\"" + metric + "\",\"points\":[";
@@ -5201,37 +5522,29 @@ void handleDailyHistory() {
     json += "\"count\":" + String(p.count) + "}";
     json += "]";
   };
-  const auto &hist = DAILY_HISTORY[idx];
-  int start = hist.size() > (size_t)days ? hist.size() - days : 0;
-  for (size_t i = start; i < hist.size(); i++) appendPoint(hist[i]);
-  DailyAggregate agg = DAILY_AGG[idx];
-  if (agg.count > 0 && agg.dayKey.length() > 0) {
-    DailyPoint p;
-    p.dayKey = agg.dayKey;
-    p.count = agg.count;
-    p.avg = agg.sum / agg.count;
-    p.min = agg.min;
-    p.max = agg.max;
-    p.last = agg.last;
-    appendPoint(p);
-  }
-  json += "],\"time_synced\":" + String(isTimeSynced() ? 1 : 0) + "}";
+  for (const auto &p : points) appendPoint(p);
+  json += "],\"time_synced\":" + String((isTimeSynced() && cloudOk) ? 1 : 0) + ",\"cloud\":"
+      + String(cloudOk ? 1 : 0) + "}";
   server.send(200, "application/json", json);
 }
 
 void handleCloud() {
   if (!enforceAuth()) return;
   if (server.method() == HTTP_GET) {
+    cloudStatus.queueSize = cloudQueue.size();
+    refreshStorageMode();
     String json = "{";
     json += "\"enabled\":" + String(cloudConfig.enabled ? 1 : 0) + ",";
     json += "\"base_url\":\"" + cloudConfig.baseUrl + "\",";
     json += "\"username\":\"" + cloudConfig.username + "\",";
     json += "\"retention\":" + String(cloudConfig.retentionMonths) + ",";
     json += "\"connected\":" + String(cloudStatus.connected ? 1 : 0) + ",";
-    json += "\"last_upload_ms\":" + String(cloudStatus.lastUploadMs) + ",";
+    json += "\"last_upload_ms\":" + String((unsigned long long)cloudStatus.lastUploadMs) + ",";
+    json += "\"last_ping_ms\":" + String((unsigned long long)cloudStatus.lastPingMs) + ",";
     json += "\"queue_size\":" + String(cloudQueue.size()) + ",";
     json += "\"failures\":" + String(cloudStatus.failureCount) + ",";
-    json += "\"last_error\":\"" + cloudStatus.lastError + "\"";
+    json += "\"last_error\":\"" + cloudStatus.lastError + "\",";
+    json += "\"storage_mode\":\"" + String(storageModeName(storageMode)) + "\"";
     json += "}";
     server.send(200, "application/json", json);
     return;
@@ -5248,8 +5561,6 @@ void handleCloud() {
       cloudConfig.retentionMonths = (uint8_t)std::max(1, std::min(4, r));
     }
     saveCloudConfig();
-    for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) trimDailyHistory(i);
-    persistDailyHistory();
     server.send(200, "text/plain", "saved");
     return;
   }
@@ -5746,9 +6057,7 @@ void setup() {
   loadCloudConfig();
   loadDailyHistory();
   activeDayKey = currentDayKey();
-  for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
-    resetDailyAgg(i, activeDayKey);
-  }
+  resetAllDaily(activeDayKey);
   loadPinsFromPrefs();
   loadSensorConfigs();
   initSensors();
@@ -5764,6 +6073,7 @@ void loop() {
   server.handleClient();
   maintainWifiConnection();
   maintainTimeSync();
+  maintainCloudHealth();
   processCloudQueue();
 
   if (millis() - lastSensorMillis >= SENSOR_INTERVAL) {
