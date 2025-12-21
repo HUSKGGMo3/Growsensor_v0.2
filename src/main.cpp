@@ -2042,7 +2042,7 @@ bool ensureCollection(const String &path, const char *label) {
   return true;
 }
 
-bool pingCloud(bool force = false) {
+bool pingCloud(bool force) {
   if (!cloudStatus.runtimeEnabled) return false;
   if (WiFi.status() != WL_CONNECTED) {
     markCloudFailure("WiFi disconnected");
