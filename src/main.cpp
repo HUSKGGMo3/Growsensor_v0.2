@@ -76,6 +76,8 @@ static constexpr unsigned long CLOUD_BACKOFF_SHORT_MS = 5000;
 static constexpr unsigned long CLOUD_BACKOFF_MED_MS = 15000;
 static constexpr unsigned long CLOUD_BACKOFF_LONG_MS = 60000;
 static constexpr unsigned long CLOUD_TEST_TIMEOUT_MS = 5000;
+static constexpr size_t CLOUD_CHUNK_THRESHOLD_BYTES = 200 * 1024;
+static constexpr size_t CLOUD_CHUNK_SIZE_BYTES = 64 * 1024;
 static constexpr unsigned long CLOUD_HEALTH_WINDOW_MS = 60000;
 static constexpr unsigned long CLOUD_PING_INTERVAL_MS = 30000;
 static constexpr unsigned long CLOUD_RECONNECT_INTERVAL_MS = 10000;
@@ -362,6 +364,8 @@ struct CloudStatus {
   bool reconnectActive = false;
   bool redState = false;
   bool foldersReady = true;
+  bool lastUploadSuccess = false;
+  bool activeChunkUpload = false;
   uint64_t lastUploadMs = 0;
   uint64_t lastFailureMs = 0;
   uint64_t lastPingMs = 0;
@@ -370,6 +374,7 @@ struct CloudStatus {
   uint64_t lastStateChangeMs = 0;
   uint32_t failureCount = 0;
   int lastHttpCode = 0;
+  int lastUploadErrorCode = 0;
   String lastError;
   String lastErrorSuffix;
   String lastUrl;
@@ -418,6 +423,8 @@ std::vector<WifiScanNetwork> wifiScanResults;
 
 unsigned long lastDebugLogMs = 0;
 unsigned long lastLoopDurationMs = 0;
+String pendingChunkCleanupId;
+uint8_t pendingChunkCleanupAttempts = 0;
 String deviceHostname = "growsensor";
 LightChannel channel = LightChannel::FullSpectrum;
 ClimateSensorType climateType = ClimateSensorType::SHT31;
@@ -459,6 +466,8 @@ String deviceId();
 String buildWebDavUrl(const String &pathRelative);
 bool ensureCollection(const String &path, const char *label);
 bool webdavRequestFollowRedirects(const String &method, const String &url, const String &payload, const char *contentType, int &outCode, String &outLocationShort, String &outBodyShort, String *chainOut = nullptr, bool *redirectedToHttps = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS);
+bool webdavMove(const String &sourceUrl, const String &destUrl, int &code, String *resp = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS);
+bool webdavDelete(const String &url, int &code, String *resp = nullptr, unsigned long timeoutMs = CLOUD_TEST_TIMEOUT_MS);
 bool pingCloud(bool force = false);
 const char *wifiAuthLabel(wifi_auth_mode_t auth);
 bool startWifiScan();
@@ -1266,6 +1275,26 @@ String cloudRootPath() {
   return cloudDeviceRoot();
 }
 
+String cloudUploadsBaseUrl() {
+  String base = buildWebDavBaseUrl();
+  if (base.length() == 0) return "";
+  String marker = "/dav/files/";
+  int idx = base.indexOf(marker);
+  String user;
+  if (idx >= 0) {
+    String tail = base.substring(idx + marker.length());
+    int slash = tail.indexOf('/');
+    if (slash >= 0) user = tail.substring(0, slash);
+  } else {
+    marker = "/webdav/";
+    idx = base.indexOf(marker);
+  }
+  if (user.length() == 0 && cloudConfig.username.length() > 0) user = cloudConfig.username;
+  if (user.length() == 0 || idx < 0) return "";
+  String root = base.substring(0, idx);
+  return ensureTrailingSlash(root + "/dav/uploads/" + user);
+}
+
 String cloudDailyMonthPath(const String &dayKey) {
   if (dayKey.length() < 7) return "";
   return cloudRootPath() + "/daily/" + dayKey.substring(0, 7);
@@ -1920,6 +1949,9 @@ String buildDebugLogBlock() {
   block += " recording=" + String(cloudConfig.recording ? 1 : 0);
   block += " queue=" + String(cloudQueue.size());
   block += " last_upload=" + lastUploadIso + " (" + String((unsigned long long)cloudStatus.lastUploadMs) + ")";
+  block += " last_upload_ok=" + String(cloudStatus.lastUploadSuccess ? 1 : 0);
+  block += " last_upload_code=" + String(cloudStatus.lastUploadErrorCode);
+  block += " chunk_active=" + String(cloudStatus.activeChunkUpload ? 1 : 0);
   if (cloudStatus.lastUploadedPath.length() > 0) block += " path=" + cloudStatus.lastUploadedPath;
   if (cloudStatus.lastError.length() > 0) {
     block += " error=\"" + cloudStatus.lastError + "\"";
@@ -1968,6 +2000,83 @@ String cloudShortPath(const String &path) {
 
 String cloudRequestStateText(const char *op, const String &label, int code) {
   return String(op) + " " + label + " -> " + String(code) + " (" + cloudProtocolLabel() + ")";
+}
+
+String cloudChunkName(uint32_t index) {
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%08lu", (unsigned long)index);
+  return String(buf);
+}
+
+bool uploadCloudPutPayload(const String &fullPath, const String &payload, const String &contentType) {
+  String url = buildWebDavUrl(fullPath);
+  int code = 0;
+  String resp;
+  const char *ctype = contentType.length() > 0 ? contentType.c_str() : "application/json";
+  String location;
+  String chain;
+  bool httpsRedirected = false;
+  bool ok = webdavRequestFollowRedirects("PUT", url, payload, ctype, code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("PUT", "upload", fullPath, code, chain, httpsRedirected);
+  cloudStatus.lastUploadErrorCode = code;
+  cloudStatus.lastUploadSuccess = ok;
+  cloudStatus.activeChunkUpload = false;
+  if (!ok) {
+    if (chain.length() > 0) {
+      markCloudFailure(cloudStatus.lastError);
+      cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+    } else {
+      setCloudError("PUT", "upload", fullPath, code, resp, httpsRedirected ? "redirected-to-https" : "");
+    }
+    logEvent(String("Cloud upload failed: ") + fullPath + " code=" + String(code), "warn", "cloud");
+    return false;
+  }
+  cloudStatus.lastUploadMs = currentEpochMs();
+  cloudStatus.lastUploadedPath = fullPath;
+  cloudStatus.lastError = "";
+  markCloudSuccess(cloudRequestStateText("PUT", "upload", code));
+  if (chain.length() > 0) {
+    cloudStatus.lastError = String("PUT upload -> ") + chain;
+  }
+  cloudStatus.queueSize = cloudQueue.size();
+  logEvent(String("Cloud upload ok: ") + fullPath, "info", "cloud");
+  return true;
+}
+
+void scheduleChunkCleanup(const String &uploadId, const String &reason) {
+  if (uploadId.length() == 0) return;
+  pendingChunkCleanupId = uploadId;
+  pendingChunkCleanupAttempts = 0;
+  logEvent(String("Cloud chunk cleanup scheduled: ") + uploadId + " (" + reason + ")");
+}
+
+bool attemptChunkCleanup() {
+  if (pendingChunkCleanupId.length() == 0) return true;
+  if (!cloudConnected()) return false;
+  String uploadsBase = cloudUploadsBaseUrl();
+  if (uploadsBase.length() == 0) {
+    pendingChunkCleanupId = "";
+    return true;
+  }
+  String sessionUrl = uploadsBase + pendingChunkCleanupId;
+  String sessionPath = String("/uploads/") + pendingChunkCleanupId;
+  int code = 0;
+  String resp;
+  bool ok = webdavDelete(sessionUrl, code, &resp, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("DELETE", "chunk", sessionPath, code, "", false);
+  if (ok && code >= 200 && code < 300) {
+    logEvent(String("Cloud chunk cleanup ok: ") + pendingChunkCleanupId);
+    pendingChunkCleanupId = "";
+    pendingChunkCleanupAttempts = 0;
+    return true;
+  }
+  pendingChunkCleanupAttempts++;
+  logEvent(String("Cloud chunk cleanup failed: ") + pendingChunkCleanupId + " code=" + String(code));
+  if (pendingChunkCleanupAttempts >= 3) {
+    pendingChunkCleanupId = "";
+    pendingChunkCleanupAttempts = 0;
+  }
+  return false;
 }
 
 void setCloudRequestNote(const char *op, const String &label, const String &path, int code, const String &chain, bool httpsRedirected) {
@@ -2033,6 +2142,64 @@ bool webdavRequest(const String &method, const String &url, const String &body, 
     String loc = http.header("Location");
     if (loc.length() > 120) loc = loc.substring(0, 120);
     *location = loc;
+  }
+  closeCloudClients(http, clients);
+  return code > 0;
+}
+
+bool webdavMove(const String &sourceUrl, const String &destUrl, int &code, String *resp, unsigned long timeoutMs) {
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  CloudRequestClients clients;
+  if (!beginCloudRequest(http, sourceUrl, clients)) {
+    code = -1;
+    if (resp) *resp = cloudProtocol() == CloudProtocol::HTTPS ? "HTTPS connect failed" : "HTTP connect failed";
+    closeCloudClients(http, clients);
+    return false;
+  }
+  if (cloudConfig.username.length() > 0) {
+    http.setAuthorization(cloudConfig.username.c_str(), cloudConfig.password.c_str());
+  }
+  http.addHeader("Destination", destUrl);
+  http.addHeader("Overwrite", "T");
+  code = http.sendRequest("MOVE", (uint8_t *)nullptr, 0);
+  if (code <= 0) {
+    if (resp) *resp = cloudProtocol() == CloudProtocol::HTTPS ? "TLS handshake failed" : "HTTP request failed";
+    closeCloudClients(http, clients);
+    return false;
+  }
+  if (resp) {
+    String out = http.getString();
+    if (out.length() > 120) out = out.substring(0, 120);
+    *resp = out;
+  }
+  closeCloudClients(http, clients);
+  return code > 0;
+}
+
+bool webdavDelete(const String &url, int &code, String *resp, unsigned long timeoutMs) {
+  HTTPClient http;
+  http.setTimeout(timeoutMs);
+  CloudRequestClients clients;
+  if (!beginCloudRequest(http, url, clients)) {
+    code = -1;
+    if (resp) *resp = cloudProtocol() == CloudProtocol::HTTPS ? "HTTPS connect failed" : "HTTP connect failed";
+    closeCloudClients(http, clients);
+    return false;
+  }
+  if (cloudConfig.username.length() > 0) {
+    http.setAuthorization(cloudConfig.username.c_str(), cloudConfig.password.c_str());
+  }
+  code = http.sendRequest("DELETE", (uint8_t *)nullptr, 0);
+  if (code <= 0) {
+    if (resp) *resp = cloudProtocol() == CloudProtocol::HTTPS ? "TLS handshake failed" : "HTTP request failed";
+    closeCloudClients(http, clients);
+    return false;
+  }
+  if (resp) {
+    String out = http.getString();
+    if (out.length() > 120) out = out.substring(0, 120);
+    *resp = out;
   }
   closeCloudClients(http, clients);
   return code > 0;
@@ -2238,6 +2405,9 @@ bool uploadDebugLogJob(const CloudJob &job) {
   int putCode = 0;
   bool ok = webdavRequestFollowRedirects("PUT", url, payload, "text/plain", putCode, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
   setCloudRequestNote("PUT", "debug", fullPath, putCode, chain, httpsRedirected);
+  cloudStatus.lastUploadErrorCode = putCode;
+  cloudStatus.lastUploadSuccess = ok;
+  cloudStatus.activeChunkUpload = false;
   if (!ok) {
     if (chain.length() > 0) {
       markCloudFailure(cloudStatus.lastError);
@@ -2444,41 +2614,115 @@ bool buildGrowReport(String &pathOut, String &payloadOut, String &errorOut) {
 
 bool uploadCloudJob(const CloudJob &job) {
   String base = safeBaseUrl();
-  if (base.length() == 0) return false;
+  if (base.length() == 0) {
+    cloudStatus.lastUploadSuccess = false;
+    cloudStatus.lastUploadErrorCode = 0;
+    return false;
+  }
   if (job.kind == "debug") {
     return uploadDebugLogJob(job);
   }
   String fullPath = job.path;
   if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
   if (!cloudEnsureFolders(job.dayKey)) {
+    cloudStatus.lastUploadSuccess = false;
+    cloudStatus.lastUploadErrorCode = 0;
     return false;
   }
-  String url = buildWebDavUrl(fullPath);
-  int code = 0;
-  String resp;
-  const char *ctype = job.contentType.length() > 0 ? job.contentType.c_str() : "application/json";
-  String location;
-  String chain;
-  bool httpsRedirected = false;
-  bool ok = webdavRequestFollowRedirects("PUT", url, job.payload, ctype, code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
-  setCloudRequestNote("PUT", "upload", fullPath, code, chain, httpsRedirected);
-  if (!ok) {
-    if (chain.length() > 0) {
-      markCloudFailure(cloudStatus.lastError);
-      cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
-    } else {
-      setCloudError("PUT", "upload", fullPath, code, resp, httpsRedirected ? "redirected-to-https" : "");
+  if (job.payload.length() <= CLOUD_CHUNK_THRESHOLD_BYTES) {
+    return uploadCloudPutPayload(fullPath, job.payload, job.contentType);
+  }
+
+  String uploadsBase = cloudUploadsBaseUrl();
+  if (uploadsBase.length() == 0) {
+    logEvent("Cloud chunk upload unavailable, falling back to PUT", "warn", "cloud");
+    return uploadCloudPutPayload(fullPath, job.payload, job.contentType);
+  }
+
+  cloudStatus.activeChunkUpload = true;
+  String uploadId = "gs_" + deviceId() + "_" + String((unsigned long)millis());
+  String sessionUrl = uploadsBase + uploadId;
+  String sessionPath = String("/uploads/") + uploadId;
+  int mkCode = 0;
+  String mkResp;
+  String mkLocation;
+  String mkChain;
+  bool mkRedirected = false;
+  bool mkOk = webdavRequestFollowRedirects("MKCOL", sessionUrl, "", "text/plain", mkCode, mkLocation, mkResp, &mkChain, &mkRedirected, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("MKCOL", "chunk", sessionPath, mkCode, mkChain, mkRedirected);
+  if (!mkOk) {
+    cloudStatus.activeChunkUpload = false;
+    cloudStatus.lastUploadErrorCode = mkCode;
+    cloudStatus.lastUploadSuccess = false;
+    setCloudError("MKCOL", "chunk", sessionPath, mkCode, mkResp, mkRedirected ? "redirected-to-https" : "");
+    logEvent(String("Cloud chunk session failed: ") + sessionUrl + " code=" + String(mkCode), "warn", "cloud");
+    return false;
+  }
+
+  size_t payloadSize = job.payload.length();
+  uint32_t chunkIndex = 0;
+  for (size_t offset = 0; offset < payloadSize; offset += CLOUD_CHUNK_SIZE_BYTES) {
+    size_t len = std::min(CLOUD_CHUNK_SIZE_BYTES, payloadSize - offset);
+    String chunkPayload = job.payload.substring(offset, offset + len);
+    String chunkName = cloudChunkName(chunkIndex++);
+    String chunkUrl = sessionUrl + "/" + chunkName;
+    String chunkPath = sessionPath + "/" + chunkName;
+    int code = 0;
+    String resp;
+    const char *ctype = job.contentType.length() > 0 ? job.contentType.c_str() : "application/json";
+    String location;
+    String chain;
+    bool httpsRedirected = false;
+    bool ok = webdavRequestFollowRedirects("PUT", chunkUrl, chunkPayload, ctype, code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
+    setCloudRequestNote("PUT", "chunk", chunkPath, code, chain, httpsRedirected);
+    if (!ok) {
+      cloudStatus.activeChunkUpload = false;
+      cloudStatus.lastUploadErrorCode = code;
+      cloudStatus.lastUploadSuccess = false;
+      if (chain.length() > 0) {
+        markCloudFailure(cloudStatus.lastError);
+        cloudStatus.lastErrorSuffix = httpsRedirected ? "redirected-to-https" : "";
+      } else {
+        setCloudError("PUT", "chunk", chunkPath, code, resp, httpsRedirected ? "redirected-to-https" : "");
+      }
+      logEvent(String("Cloud chunk upload failed: ") + chunkUrl + " code=" + String(code), "warn", "cloud");
+      int delCode = 0;
+      String delResp;
+      bool delOk = webdavDelete(sessionUrl, delCode, &delResp, CLOUD_TEST_TIMEOUT_MS);
+      if (!delOk || delCode < 200 || delCode >= 300) {
+        scheduleChunkCleanup(uploadId, "chunk_put_failed");
+      }
+      return false;
+    }
+  }
+
+  String finalUrl = buildWebDavUrl(fullPath);
+  String sourceUrl = sessionUrl + "/.file";
+  int mvCode = 0;
+  String mvResp;
+  bool moveOk = webdavMove(sourceUrl, finalUrl, mvCode, &mvResp, CLOUD_TEST_TIMEOUT_MS);
+  setCloudRequestNote("MOVE", "chunk", fullPath, mvCode, "", false);
+  cloudStatus.lastUploadErrorCode = mvCode;
+  cloudStatus.lastUploadSuccess = moveOk;
+  cloudStatus.activeChunkUpload = false;
+  if (!moveOk || mvCode < 200 || mvCode >= 300) {
+    setCloudError("MOVE", "chunk", fullPath, mvCode, mvResp);
+    logEvent(String("Cloud chunk finalize failed: ") + fullPath + " code=" + String(mvCode), "warn", "cloud");
+    int delCode = 0;
+    String delResp;
+    bool delOk = webdavDelete(sessionUrl, delCode, &delResp, CLOUD_TEST_TIMEOUT_MS);
+    if (!delOk || delCode < 200 || delCode >= 300) {
+      scheduleChunkCleanup(uploadId, "chunk_finalize_failed");
     }
     return false;
   }
+
   cloudStatus.lastUploadMs = currentEpochMs();
   cloudStatus.lastUploadedPath = fullPath;
   cloudStatus.lastError = "";
-  markCloudSuccess(cloudRequestStateText("PUT", "upload", code));
-  if (chain.length() > 0) {
-    cloudStatus.lastError = String("PUT upload -> ") + chain;
-  }
+  markCloudSuccess(cloudRequestStateText("MOVE", "chunk", mvCode));
   cloudStatus.queueSize = cloudQueue.size();
+  logEvent(String("Cloud chunk upload ok: ") + fullPath, "info", "cloud");
   return true;
 }
 
@@ -2495,6 +2739,7 @@ void processCloudQueue() {
     refreshStorageMode();
     return;
   }
+  attemptChunkCleanup();
   if (nextCloudAttemptAfterMs != 0 && now < nextCloudAttemptAfterMs) return;
   CloudJob &job = cloudQueue.front();
   if (job.kind == "debug" && job.createdAtMs != 0 && now - job.createdAtMs > DEBUG_LOG_MAX_CACHE_MS) {
@@ -2587,6 +2832,9 @@ bool sendCloudTestFile(int &httpCode, size_t &bytesOut, String &pathOut, String 
   bool ok = webdavRequestFollowRedirects("PUT", buildWebDavUrl(pathOut), body, "text/plain", code, location, resp, &chain, &httpsRedirected, CLOUD_TEST_TIMEOUT_MS);
   setCloudRequestNote("PUT", "test", pathOut, code, chain, httpsRedirected);
   httpCode = code;
+  cloudStatus.lastUploadErrorCode = code;
+  cloudStatus.lastUploadSuccess = ok;
+  cloudStatus.activeChunkUpload = false;
   if (ok) {
     cloudStatus.lastTestMs = currentEpochMs();
     cloudStatus.lastUploadMs = cloudStatus.lastTestMs;
@@ -6799,6 +7047,9 @@ void handleCloud() {
     doc["connected"] = cloudStatus.connected;
     doc["last_upload_ms"] = (uint64_t)cloudStatus.lastUploadMs;
     doc["last_uploaded_path"] = cloudStatus.lastUploadedPath;
+    doc["last_upload_success"] = cloudStatus.lastUploadSuccess;
+    doc["last_upload_error"] = cloudStatus.lastUploadErrorCode;
+    doc["active_chunk_upload"] = cloudStatus.activeChunkUpload;
     doc["last_ping_ms"] = (uint64_t)cloudStatus.lastPingMs;
     doc["last_failure_ms"] = (uint64_t)cloudStatus.lastFailureMs;
     doc["last_test_ms"] = (uint64_t)cloudStatus.lastTestMs;
