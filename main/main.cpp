@@ -18,8 +18,20 @@
 #include <algorithm>
 #include <new>
 #include <esp_system.h>
-#include <esp32-hal-psram.h>
 #include "esp_heap_caps.h"
+
+#if __has_include(<esp32-hal-psram.h>)
+#include <esp32-hal-psram.h>
+#elif __has_include(<esp_psram.h>)
+#include <esp_psram.h>
+#include <esp_err.h>
+inline bool psramFound() { return esp_psram_is_initialized(); }
+inline bool psramInit() { return esp_psram_init() == ESP_OK; }
+#else
+#warning "PSRAM support headers not found; PSRAM features disabled."
+inline bool psramFound() { return false; }
+inline bool psramInit() { return false; }
+#endif
 
 #ifndef CLOUD_DIAG
 #define CLOUD_DIAG 0
