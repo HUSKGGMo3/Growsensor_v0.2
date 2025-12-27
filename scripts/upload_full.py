@@ -11,15 +11,21 @@ def _get_project_option(name: str):
     if hasattr(env, "GetProjectOption"):
         try:
             return env.GetProjectOption(name)
-        except KeyError:
+        except Exception:  # PlatformIO raises various lookup errors for missing options
             return None
     return None
 
 
 def _resolve_upload_setting(option: str, default: str) -> str:
+    def _board_upload_option() -> str | None:
+        try:
+            return env.BoardConfig().get(f"upload.{option}")
+        except KeyError:
+            return None
+
     return str(
         _get_project_option(f"board_upload.{option}")
-        or env.BoardConfig().get(f"upload.{option}")
+        or _board_upload_option()
         or default
     )
 
