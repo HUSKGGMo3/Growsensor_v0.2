@@ -19,15 +19,6 @@
 #include <new>
 #include <esp_system.h>
 #include <esp32-hal-psram.h>
-#ifdef __has_include
-#if __has_include("esp32s3/spiram.h")
-#include "esp32s3/spiram.h"
-#elif __has_include("esp32/spiram.h")
-#include "esp32/spiram.h"
-#elif __has_include("esp_psram.h")
-#include "esp_psram.h"
-#endif
-#endif
 #include "esp_heap_caps.h"
 
 #ifndef CLOUD_DIAG
