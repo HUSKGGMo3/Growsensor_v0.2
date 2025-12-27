@@ -7,6 +7,7 @@ from SCons.Script import DefaultEnvironment
 
 PROJECT_DIR = Path(DefaultEnvironment()["PROJECT_DIR"])
 FLASH_SIZES = {"4MB": 4 * 1024 * 1024, "8MB": 8 * 1024 * 1024, "16MB": 16 * 1024 * 1024}
+ALIGNMENT = 0x1000
 
 PARTITIONS: Dict[str, dict] = {
     "16MB": {
@@ -63,7 +64,14 @@ def _parse_number(raw: str) -> int:
     return int(value, 0)
 
 
-def _validate_partition_map(csv_path: Path, flash_bytes: int) -> None:
+def _resolve_env_offset(env, var_name: str, default: str) -> int:
+    resolved = env.subst(f"${var_name}")
+    if not resolved or var_name in resolved:
+        resolved = default
+    return _parse_number(resolved)
+
+
+def _validate_partition_map(csv_path: Path, flash_bytes: int, app_offset: int) -> None:
     entries: List[Tuple[str, int, int]] = []
     for line in csv_path.read_text().splitlines():
         stripped = line.strip()
@@ -82,12 +90,26 @@ def _validate_partition_map(csv_path: Path, flash_bytes: int) -> None:
 
     entries.sort(key=lambda e: e[1])
     prev_end = 0
+    app0_offset = None
     for name, offset, size in entries:
         if offset < prev_end:
             raise ValueError(
                 f"Partition overlap detected in {csv_path.name}: {name} at 0x{offset:X} overlaps previous end 0x{prev_end:X}"
             )
+        if offset % ALIGNMENT != 0 or size % ALIGNMENT != 0:
+            raise ValueError(
+                f"Partition alignment error in {csv_path.name}: {name} offset/size must be 0x{ALIGNMENT:X}-aligned (offset=0x{offset:X}, size=0x{size:X})"
+            )
+        if name.lower() == "app0":
+            app0_offset = offset
         prev_end = offset + size
+
+    if app0_offset is None:
+        raise ValueError(f"Partition table {csv_path.name} is missing app0")
+    if app0_offset != app_offset:
+        raise ValueError(
+            f"Partition app0 offset mismatch in {csv_path.name}: app0 is at 0x{app0_offset:X} but upload expects 0x{app_offset:X}"
+        )
 
     if prev_end > flash_bytes:
         raise ValueError(
@@ -118,9 +140,15 @@ def ensure_partition(target, source, env):  # pylint: disable=unused-argument
     partition_key = configured_flash if configured_flash in PARTITIONS else "16MB"
     csv_path = _write_partition_file(partition_key)
     flash_bytes = FLASH_SIZES.get(partition_key, FLASH_SIZES["16MB"])
+    app_offset = _resolve_env_offset(env, "ESP32_APP_OFFSET", "0x10000")
+    partition_offset = _resolve_env_offset(env, "ESP32_PARTITION_TABLE_OFFSET", "0x8000")
 
     try:
-        _validate_partition_map(csv_path, flash_bytes)
+        if partition_offset != 0x8000:
+            raise ValueError(
+                f"Partition table offset must be 0x8000 (got 0x{partition_offset:X})"
+            )
+        _validate_partition_map(csv_path, flash_bytes, app_offset)
     except ValueError as exc:
         print(f"[partition_guard] {exc}")
         env.Exit(1)
