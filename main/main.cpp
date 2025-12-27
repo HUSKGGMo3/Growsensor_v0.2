@@ -11,6 +11,7 @@
 #include <math.h>
 #include <ArduinoJson.h>
 #include <cstring>
+#include <cstdlib>
 #include <HTTPClient.h>
 #include <time.h>
 #include <sys/time.h>
@@ -19,13 +20,18 @@
 #include <new>
 #include <esp_system.h>
 #include "esp_heap_caps.h"
+#include <esp_idf_version.h>
 
 #if __has_include(<esp32-hal-psram.h>)
 #include <esp32-hal-psram.h>
 #else
 #warning "PSRAM support headers not found; PSRAM features disabled."
 inline bool psramFound() { return false; }
-inline bool psramInit() { return false; }
+inline void *ps_malloc(size_t) { return nullptr; }
+#endif
+
+#ifndef EXT_RAM_ATTR
+#define EXT_RAM_ATTR
 #endif
 
 #ifndef CLOUD_DIAG
@@ -40,17 +46,17 @@ inline bool psramInit() { return false; }
 #include <ESPmDNS.h>
 #endif
 
-#ifndef EXT_RAM_ATTR
-#define EXT_RAM_ATTR
-#endif
-
-#ifndef SPIRAM_ALLOC_CAPS
-#define SPIRAM_ALLOC_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-#endif
-
-bool psramReady = false;
+bool gs_psram_available = false;
 size_t psramBytesTotal = 0;
 size_t psramBytesFreeAtBoot = 0;
+
+void *smartAlloc(size_t size) {
+  if (gs_psram_available) {
+    void *ptr = ps_malloc(size);
+    if (ptr) return ptr;
+  }
+  return malloc(size);
+}
 
 template <typename T> struct PsramAllocator {
   using value_type = T;
@@ -58,13 +64,12 @@ template <typename T> struct PsramAllocator {
   template <class U> constexpr PsramAllocator(const PsramAllocator<U> &) noexcept {}
   [[nodiscard]] T *allocate(std::size_t n) {
     size_t bytes = n * sizeof(T);
-    void *ptr = psramReady ? heap_caps_malloc(bytes, SPIRAM_ALLOC_CAPS) : nullptr;
-    if (!ptr) ptr = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    void *ptr = smartAlloc(bytes);
     if (!ptr) throw std::bad_alloc();
     return static_cast<T *>(ptr);
   }
   void deallocate(T *p, std::size_t) noexcept {
-    if (p) heap_caps_free(p);
+    if (p) free(p);
   }
 };
 
@@ -768,26 +773,25 @@ DailyHistoryFetchJob dailyHistoryFetch;
 // Helpers
 // ----------------------------
 void initPsram() {
-  bool hasPsram = false;
-
-#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32 || CONFIG_SPIRAM
-  hasPsram = psramInit();
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  gs_psram_available = psramFound();
+#else
+  gs_psram_available = false;
 #endif
 
-  psramReady = hasPsram && psramFound();
-  if (psramReady) {
-    Serial.println("[PSRAM] OK and initialized");
+  if (gs_psram_available) {
+    Serial.println("[PSRAM] Detected and active");
   } else {
-    Serial.println("[PSRAM] NOT FOUND – running fallback mode, but firmware keeps working");
+    Serial.println("[PSRAM] Not available → fallback mode");
   }
 
-  psramBytesTotal = psramReady ? ESP.getPsramSize() : 0;
-  psramBytesFreeAtBoot = psramReady ? heap_caps_get_free_size(MALLOC_CAP_SPIRAM) : 0;
-  String summary = psramReady ? String("PSRAM ready: ") + (psramBytesTotal / (1024 * 1024)) + " MB (" +
-                                  (psramBytesFreeAtBoot / 1024) + " KB free)"
-                              : "PSRAM not detected, running fallback mode";
+  psramBytesTotal = gs_psram_available ? ESP.getPsramSize() : 0;
+  psramBytesFreeAtBoot = gs_psram_available ? heap_caps_get_free_size(MALLOC_CAP_SPIRAM) : 0;
+  String summary = gs_psram_available ? String("PSRAM detected: ") + (psramBytesTotal / (1024 * 1024)) +
+                                           " MB (" + (psramBytesFreeAtBoot / 1024) + " KB free)"
+                                       : "PSRAM not detected, running fallback mode";
 
-  logEvent(summary, psramReady ? "info" : "warn");
+  logEvent(summary, gs_psram_available ? "info" : "warn");
 }
 
 struct CloudRequestClients {
