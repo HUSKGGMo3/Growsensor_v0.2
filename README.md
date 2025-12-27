@@ -1,6 +1,9 @@
 # Growsensor – ESP32 Monitoring Node
 
-**Current release: v1.0 (Stable Launch)**
+**Current releases:**
+
+- **GrowSensor – v0.3.3 (Classic ESP32)** – legacy build for standard ESP32-DevKit boards.
+- **GrowSensor – v0.4.0 (ESP32 Pro 16MB)** – new optimized build for ESP32 modules with external antenna, 16MB flash, PSRAM.
 
 ## Beginner-Friendly Install (for Dummies)
 You only need a USB cable, an ESP32, and a laptop/PC.
@@ -9,25 +12,30 @@ You only need a USB cable, an ESP32, and a laptop/PC.
 2. Open this repository folder in VS Code.
 3. Connect the ESP32 via USB (use a data cable, not charge-only).
 4. In PlatformIO, select the correct **Serial Port** for your ESP32.
-5. Click **Build** (checkmark) once to make sure it compiles.
-6. Click **Upload** (right arrow) to flash the firmware.
-7. Open the **Serial Monitor** at **115200 baud** to see logs.
-8. After reboot, connect your phone/PC to the device’s setup Wi‑Fi (shown in the serial log), then open the setup page in your browser.
-9. Log in with `Admin` / `admin`, change the password, and configure Wi‑Fi/sensors.
+5. Choose your board/variant:
+   - **ESP32 Pro 16MB (recommended):** `pio run -e esp32pro16m` (default)
+   - **Classic DevKit:** `pio run -e esp32classic`
+6. Click **Build** (checkmark) once to make sure it compiles.
+7. Click **Upload** (right arrow) to flash the firmware.
+8. Open the **Serial Monitor** at **115200 baud** to see logs.
+9. After reboot, connect your phone/PC to the device’s setup Wi‑Fi (shown in the serial log), then open the setup page in your browser.
+10. Log in with `Admin` / `admin`, change the password, and configure Wi‑Fi/sensors.
 
 If anything fails: unplug/replug, try another USB cable/port, and rebuild/upload again.
 
-### Release v1.0 (Stable Launch)
-- Firmware version bumped to v1.0.
-- Documentation and install guide refreshed for the 1.0 release.
+### Release v0.4.0 (ESP32 Pro, 16MB, PSRAM)
+- New PlatformIO target **esp32pro16m** (default) for 16MB ESP32 Pro boards with external antenna & PSRAM.
+- Classic build kept as **esp32classic** (unchanged feature set) for DevKit / legacy boards.
+- Firmware strings clarify channel/board (v0.3.3 Classic vs. v0.4.0 Pro) in APIs and cloud payloads.
+- Partition map for Pro build supports dual OTA slots + large SPIFFS for cached assets/logs.
 
-### Patch v0.3.5 (Zoom Stabil + WLAN Fix + Pi-Bridge Boost)
+### Classic Patch v0.3.5 (Zoom Stabil + WLAN Fix + Pi-Bridge Boost)
 
 - Chart-Zoom in der Detailansicht hält das Datenfenster im sichtbaren Bereich (inkl. Touch-Pinch).
 - WLAN-Scan liefert stabile Antworten, inkl. leerer Ergebnisse ohne Fehler-Popup + Throttle.
 - Pi-Bridge sendet WLAN-Credentials nach Handshake, Log-API + GUI-Log + Failover-Safe-Mode.
 
-### Patch v0.3.4 (Factor Fix + WiFi Scan + Pi-Bridge Preview)
+### Classic Patch v0.3.4 (Factor Fix + WiFi Scan + Pi-Bridge Preview)
 - LED/VPD phase logic consolidated: VPD target + PPFD scale now update consistently across tiles, header, and heatmaps.
 - Wi‑Fi scan dropdown fixed with throttled async scans and stable JSON responses.
 - Chart color preview label now mirrors the selected line color.

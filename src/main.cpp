@@ -123,7 +123,21 @@ static constexpr size_t CLOUD_LOG_FLUSH_LINES = 24;
 static constexpr unsigned long DEBUG_LOG_INTERVAL_MS = 5UL * 60UL * 1000UL;
 static constexpr unsigned long DEBUG_LOG_MAX_CACHE_MS = 5UL * 60UL * 1000UL;
 static constexpr size_t DEBUG_LOG_MAX_FILE_BYTES = 64000;
-static const char *FIRMWARE_VERSION = "v1.0";
+#ifndef GS_FIRMWARE_VERSION
+#define GS_FIRMWARE_VERSION "GrowSensor – v1.0 (unspecified)"
+#endif
+
+#ifndef GS_TARGET_BOARD
+#define GS_TARGET_BOARD "ESP32"
+#endif
+
+#ifndef GS_FIRMWARE_CHANNEL
+#define GS_FIRMWARE_CHANNEL "unspecified"
+#endif
+
+static const char *FIRMWARE_VERSION = GS_FIRMWARE_VERSION;
+static const char *FIRMWARE_TARGET = GS_TARGET_BOARD;
+static const char *FIRMWARE_CHANNEL = GS_FIRMWARE_CHANNEL;
 static const char *CLOUD_ROOT_FOLDER = "GrowSensor";
 
 static const char *NTP_SERVER_1 = "pool.ntp.org";
@@ -1472,6 +1486,8 @@ String serializeDailyPayload(const String &dayKey) {
   doc["tz"] = timezoneName;
   doc["deviceId"] = deviceId();
   doc["firmware"] = FIRMWARE_VERSION;
+  doc["target"] = FIRMWARE_TARGET;
+  doc["channel"] = FIRMWARE_CHANNEL;
   JsonObject sensors = doc.createNestedObject("sensors");
   bool hasMetric = false;
   for (size_t i = 0; i < HISTORY_METRIC_COUNT; i++) {
@@ -1609,6 +1625,8 @@ String buildRecordingPayload(uint64_t epochMs) {
   doc["iso"] = isoTimestamp(epochMs);
   doc["deviceId"] = deviceId();
   doc["firmware"] = FIRMWARE_VERSION;
+  doc["target"] = FIRMWARE_TARGET;
+  doc["channel"] = FIRMWARE_CHANNEL;
   doc["mode"] = "http";
   JsonObject net = doc.createNestedObject("net");
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
@@ -2828,6 +2846,7 @@ bool buildGrowReport(String &pathOut, String &payloadOut, String &errorOut) {
   text += "Statistik: " + assessment + "\n";
   text += "Abschlusszeitpunkt: " + finishStamp + "\n";
   text += "Firmware Version am Ende: " + String(FIRMWARE_VERSION) + "\n";
+  text += "Ziel-Plattform: " + String(FIRMWARE_TARGET) + " (" + String(FIRMWARE_CHANNEL) + ")\n";
 
   pathOut = cloudReportsFolder() + "/GrowReport_" + startDay + "_bis_" + endDay + ".txt";
   payloadOut = text;
@@ -4140,7 +4159,10 @@ void handleStatus() {
   json += "\"ssid\":\"" + ssid + "\",";
   json += "\"rssi\":" + String(rssi) + ",";
   json += "\"ip\":\"" + ipStr + "\",";
-  json += "\"hostname\":\"" + deviceHostname + "\"";
+  json += "\"hostname\":\"" + deviceHostname + "\",";
+  json += "\"firmware\":\"" + String(FIRMWARE_VERSION) + "\",";
+  json += "\"target\":\"" + String(FIRMWARE_TARGET) + "\",";
+  json += "\"channel\":\"" + String(FIRMWARE_CHANNEL) + "\"";
   json += "}";
   statusCachePayload = json;
   statusCacheAtMs = now;
